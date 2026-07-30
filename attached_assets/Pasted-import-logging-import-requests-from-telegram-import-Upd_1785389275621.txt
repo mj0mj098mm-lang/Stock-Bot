@@ -1,13 +1,12 @@
-import os
 import logging
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler, 
     MessageHandler, filters, ContextTypes, ConversationHandler
 )
 
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TOKEN = "7547180470:AAFiQ_D58n94JgYwA-vjlyo9e8v5tJb2l2s"
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
@@ -34,12 +33,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("❓ كيفية الاستخدام", callback_data='btn_help')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
+    
     text = (
         "📊 **مرحباً بك في بوت منارة الأسهم (StockBeacon)!**\n\n"
         "اختر من الأزرار أدناه للبدء:"
     )
-
+    
     if update.message:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
@@ -51,40 +50,36 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if query.data == 'btn_analyze':
-        await query.message.reply_text("✍️ **يرجى كتابة رمز السهم الآن (مثال: AAPL أو TSLA):**", parse_mode='Markdown')
+        await query.message.reply_text("✍️ **يرجى كتابة رمز السهم الآن (مثال: AAPL أو TSLA):**")
         return WAITING_FOR_SYMBOL
 
     elif query.data == 'btn_calc':
-        await query.message.reply_text("💰 **أدخل قيمة رأس مالك بالدولار (مثال: 5000 أو 10000):**", parse_mode='Markdown')
+        await query.message.reply_text("💰 **أدخل قيمة رأس مالك بالدولار (مثال: 5000 أو 10000):**")
         return WAITING_FOR_CAPITAL
 
     elif query.data == 'btn_help':
         await query.message.reply_text("💡 **طريقة الاستخدام:**\nاضغط على 'تحليل سهم' واكتب رمز السهم لتصلك صورة الشارت والتقرير الفني فوراً.")
         return ConversationHandler.END
 
-    elif query.data == 'btn_start':
-        await start(update, context)
-        return ConversationHandler.END
-
 # 3. استقبال رمز السهم وإظهار التقرير والشارت
 async def process_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = update.message.text.upper().strip()
     context.user_data['last_symbol'] = symbol
-
+    
     await update.message.reply_text(f"⏳ جاري تحليل {symbol} وجلب البيانات والشارت...")
 
     current_price = get_stock_price(symbol)
     if not current_price:
-        await update.message.reply_text(f"❌ تعذر جلب البيانات لـ `{symbol}`، تأكد من رمز السهم واكتبه مرة أخرى:", parse_mode='Markdown')
+        await update.message.reply_text(f"❌ تعذر جلب البيانات لـ `{symbol}`، التأكد من رمز السهم واكتبه مرة أخرى:")
         return WAITING_FOR_SYMBOL
 
     context.user_data['last_price'] = current_price
 
     stop_loss = round(current_price * 0.97, 2)
-    smc_low   = round(current_price * 0.985, 2)
-    smc_high  = round(current_price * 0.995, 2)
-    target1   = round(current_price * 1.03, 2)
-    target2   = round(current_price * 1.06, 2)
+    smc_low = round(current_price * 0.985, 2)
+    smc_high = round(current_price * 0.995, 2)
+    target1 = round(current_price * 1.03, 2)
+    target2 = round(current_price * 1.06, 2)
 
     report_text = (
         f"📈 **تقرير التحليل اللحظي: {symbol}**\n"
@@ -96,6 +91,7 @@ async def process_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🛡️ **وقف الخسارة المقترح (SL):** {stop_loss}$"
     )
 
+    # إضافة أزرار تفاعلية تحت التقرير مباشرة
     keyboard = [
         [InlineKeyboardButton("🛡️ احسب حجم الصفقة لرأس مالي", callback_data='btn_calc')],
         [InlineKeyboardButton("🔄 تحليل سهم آخر", callback_data='btn_analyze')]
@@ -114,18 +110,19 @@ async def process_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 4. حساب إدارة المخاطر بناءً على المبلغ الذي يكتبه العميل
 async def process_capital(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text.strip()
-
+    
     if not user_input.isdigit():
         await update.message.reply_text("❌ يرجى إدخال رقم صحيح لرأس المال (مثال: 5000):")
         return WAITING_FOR_CAPITAL
 
     capital = float(user_input)
     symbol = context.user_data.get('last_symbol', 'السهم')
-    price  = context.user_data.get('last_price', 100.0)
+    price = context.user_data.get('last_price', 100.0)
 
-    risk_amount    = capital * 0.02
-    position_size  = capital * 0.10
-    shares_count   = int(position_size / price) if price > 0 else 0
+    # حساب الحجم المناسب (مثلاً المخاطرة بـ 2% من رأس المال)
+    risk_amount = capital * 0.02
+    position_size = capital * 0.10  # 10% من رأس المال في الصفقة
+    shares_count = int(position_size / price) if price > 0 else 0
 
     calc_result = (
         f"🧮 **حاسبة المخاطر المخصصة ({symbol}):**\n"
@@ -144,10 +141,6 @@ async def process_capital(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 if __name__ == '__main__':
-    if not TOKEN:
-        print("❌ خطأ: لم يتم تعيين TELEGRAM_BOT_TOKEN في متغيرات البيئة.")
-        exit(1)
-
     app = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -163,6 +156,6 @@ if __name__ == '__main__':
     )
 
     app.add_handler(conv_handler)
-
+    
     print("🚀 البوت التفاعلي يعمل بنجاح مع الأزرار والحاسبة...")
     app.run_polling()
