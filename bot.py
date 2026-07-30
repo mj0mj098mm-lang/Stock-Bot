@@ -113,31 +113,90 @@ async def process_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # 4. حساب إدارة المخاطر بناءً على المبلغ الذي يكتبه العميل
 async def process_capital(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_input = update.message.text.strip()
+    user_input = update.message.text.strip().replace(',', '')
 
-    if not user_input.isdigit():
-        await update.message.reply_text("❌ يرجى إدخال رقم صحيح لرأس المال (مثال: 5000):")
+    try:
+        capital = float(user_input)
+        if capital <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("❌ يرجى إدخال رقم صحيح موجب لرأس المال (مثال: 5000):")
         return WAITING_FOR_CAPITAL
 
-    capital = float(user_input)
     symbol = context.user_data.get('last_symbol', 'السهم')
-    price  = context.user_data.get('last_price', 100.0)
+    price  = context.user_data.get('last_price', None)
 
-    risk_amount    = capital * 0.02
-    position_size  = capital * 0.10
-    shares_count   = int(position_size / price) if price > 0 else 0
+    # إذا لم يكن هناك سعر محفوظ نجلبه الآن
+    if not price:
+        price = get_stock_price(symbol)
+    if not price:
+        price = 100.0
+
+    stop_loss_price = round(price * 0.97, 2)   # SL عند 3% تحت السعر
+    sl_per_share    = round(price - stop_loss_price, 2)
+
+    # ─── نسب التخصيص ───────────────────────────────────────
+    risk_pct_2      = capital * 0.02             # أقصى خسارة 2%
+    risk_pct_1      = capital * 0.01             # خسارة محافظة 1%
+
+    # حجم الصفقة المحسوب من المخاطرة (Risk-Based Position Sizing)
+    # عدد الأسهم = مبلغ المخاطرة / الخسارة لكل سهم
+    shares_risk_2   = risk_pct_2 / sl_per_share if sl_per_share > 0 else 0
+    shares_risk_1   = risk_pct_1 / sl_per_share if sl_per_share > 0 else 0
+
+    position_risk_2 = round(shares_risk_2 * price, 2)
+    position_risk_1 = round(shares_risk_1 * price, 2)
+
+    shares_risk_2_d = round(shares_risk_2, 2)
+    shares_risk_1_d = round(shares_risk_1, 2)
+
+    # هدف الربح بنسبة 1:3
+    target_rr3 = round(price + (sl_per_share * 3), 2)
+
+    # الحد الأدنى لرأس المال لشراء سهم واحد كامل
+    min_capital_1_share = round(price / 0.10, 2)   # إذا كان الحد 10% من الرأس المال
+
+    # ─── هل يكفي رأس المال لسهم واحد على الأقل؟ ─────────
+    can_buy_full = capital >= price
+
+    # ─── بناء التقرير ──────────────────────────────────────
+    shares_line_2 = f"{shares_risk_2_d:.2f} سهم" if shares_risk_2_d >= 1 else f"{shares_risk_2_d:.2f} سهم (كسري - متاح في بعض المنصات)"
+    shares_line_1 = f"{shares_risk_1_d:.2f} سهم" if shares_risk_1_d >= 1 else f"{shares_risk_1_d:.2f} سهم (كسري)"
+
+    warning = ""
+    if not can_buy_full:
+        warning = (
+            f"\n⚠️ **تنبيه:** سعر السهم الواحد ({price}$) أعلى من رأس مالك.\n"
+            f"• لشراء سهم كامل تحتاج على الأقل: **{price:,.2f}$**\n"
+            f"• أو استخدم منصة تدعم **الأسهم الكسرية** (Fractional Shares) مثل eToro أو Webull.\n"
+        )
 
     calc_result = (
-        f"🧮 **حاسبة المخاطر المخصصة ({symbol}):**\n"
-        f"-----------------------------------\n"
+        f"🧮 **حاسبة المخاطر الذكية — {symbol}**\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
         f"💵 **رأس مالك:** {capital:,.2f}$\n"
-        f"📊 **حجم الصفقة المقترح (10%):** {position_size:,.2f}$\n"
-        f"🔢 **عدد الأسهم الأنسب للشراء:** {shares_count} سهم\n"
-        f"⚠️ **أقصى خسارة مسموحة (2%):** {risk_amount:,.2f}$\n\n"
-        f"💡 *هذه الحسبة تحمي حسابك من التراجعات الكبيرة.*"
+        f"📌 **السعر الحالي:** {price}$\n"
+        f"🛑 **وقف الخسارة المقترح:** {stop_loss_price}$ (3%-)\n"
+        f"📉 **الخسارة لكل سهم:** {sl_per_share}$\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"**🟡 خيار محافظ (مخاطرة 1%):**\n"
+        f"  • مبلغ المخاطرة: {risk_pct_1:,.2f}$\n"
+        f"  • حجم الصفقة: {position_risk_1:,.2f}$\n"
+        f"  • عدد الأسهم: {shares_line_1}\n\n"
+        f"**🔴 خيار معتدل (مخاطرة 2%):**\n"
+        f"  • مبلغ المخاطرة: {risk_pct_2:,.2f}$\n"
+        f"  • حجم الصفقة: {position_risk_2:,.2f}$\n"
+        f"  • عدد الأسهم: {shares_line_2}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 **هدف الربح (R:R = 1:3):** {target_rr3}$\n"
+        f"{warning}\n"
+        f"💡 *الحجم محسوب بناءً على المخاطرة الفعلية لكل سهم، وليس نسبة ثابتة من رأس المال.*"
     )
 
-    keyboard = [[InlineKeyboardButton("🔙 العودة للقائمة الرئيسية", callback_data='btn_start')]]
+    keyboard = [
+        [InlineKeyboardButton("🔄 تحليل سهم آخر", callback_data='btn_analyze')],
+        [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data='btn_start')]
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(calc_result, reply_markup=reply_markup, parse_mode='Markdown')
