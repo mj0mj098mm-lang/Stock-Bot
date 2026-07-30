@@ -1,14 +1,14 @@
-import os
 import logging
 import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+# 1. التوكن الخاص ببوتك
+TOKEN = "7547180470:AAFiQ_D58n94JgYwA-vjlyo9e8v5tJb2l2s"
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# أمر البدء /start
+# 2. أمر البدء /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "📊 **أهلاً بك في بوت منارة الأسهم (StockBeacon)!**\n\n"
@@ -20,7 +20,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, parse_mode='Markdown')
 
-# أمر التحليل الشامل (الشارت + SMC + إدارة المخاطر)
+# 3. أمر التحليل الشامل (الشارت + SMC + إدارة المخاطر)
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("❌ يرجى كتابة رمز السهم، مثال: `/analyze AAPL`", parse_mode='Markdown')
@@ -29,6 +29,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = context.args[0].upper().strip()
     await update.message.reply_text(f"⏳ جاري تحليل {symbol} وجلب الشارت...")
 
+    # تقرير التحليل المطور
     report_text = (
         f"📈 **تقرير التحليل اللحظي: {symbol}**\n"
         f"-----------------------------------\n"
@@ -42,25 +43,27 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• **نسبة المخاطرة/المكافأة:** 1:3 ⭐️"
     )
 
+    # رابط جلب صورة الشارت المباشر من منصة Finviz
     chart_url = f"https://charts2.finviz.com/chart.ashx?t={symbol}&ty=c&ta=1&p=d&s=l"
 
     try:
+        # إرسال الشارت كصورة مع التقرير
         await update.message.reply_photo(
             photo=chart_url,
             caption=report_text,
             parse_mode='Markdown'
         )
     except Exception:
+        # في حال عدم توفر الصورة لأي سبب، يتم إرسال النص لضمان عدم توقف البوت
         await update.message.reply_text(report_text, parse_mode='Markdown')
 
+# 4. تشغيل البوت
 if __name__ == '__main__':
-    if not TOKEN:
-        print("❌ خطأ: لم يتم تعيين TELEGRAM_BOT_TOKEN في متغيرات البيئة.")
-        exit(1)
-
     app = ApplicationBuilder().token(TOKEN).build()
+    
+    # تسجيل الأوامر
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("analyze", analyze))
-
+    
     print("🚀 البوت يعمل الآن بنجاح...")
     app.run_polling()
