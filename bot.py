@@ -1,4 +1,5 @@
 import os
+import time
 import logging
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -102,7 +103,9 @@ async def process_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    chart_url = f"https://charts2.finviz.com/chart.ashx?t={symbol}&ty=c&ta=1&p=d&s=l"
+    # فريم الساعة مع كسر الكاش للحصول على شارت محدّث
+    ts = int(time.time())
+    chart_url = f"https://charts2.finviz.com/chart.ashx?t={symbol}&ty=c&ta=1&p=i60&s=l&_={ts}"
 
     try:
         await update.message.reply_photo(photo=chart_url, caption=report_text, reply_markup=reply_markup, parse_mode='Markdown')
