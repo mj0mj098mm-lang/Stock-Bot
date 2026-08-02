@@ -776,12 +776,11 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     msg = await update.message.reply_text(f"⏳ جاري التحليل الشامل لـ *{symbol}* ...", parse_mode="Markdown")
-    d = deep_analysis(symbol)
+    d = get_stock_data(symbol)
     if not d:
-        # محاولة بيانات بسيطة على الأقل
-        d = get_stock_data(symbol)
+        d = deep_analysis(symbol)
         if not d:
-            await msg.edit_text(f"❌ لم يتم العثور على `{symbol}`. تأكد من الرمز.", parse_mode="Markdown")
+            await msg.edit_text(f"❌ لم يتم العثور على `{symbol}`. تأكد من صحة الرمز.", parse_mode="Markdown")
             return
         d['decision'] = "انتظار ⏳"
         d['action']   = "wait"
