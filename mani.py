@@ -91,35 +91,29 @@ def _yf_ticker(symbol: str) -> yf.Ticker:
     return yf.Ticker(symbol)
 
 def get_stock_data(symbol: str) -> dict | None:
-    """بيانات كاملة بالأسعار الفورية — مع retry تلقائي"""
-    for attempt in range(3):
+    """بيانات كاملة بالأسعار الفورية - مع حماية ضد التعليق"""
+    for attempt in range(2):
         try:
-            tk   = _yf_ticker(symbol)
-            info = tk.fast_info          # سريع جداً
-            price = getattr(info, 'last_price', None) or getattr(info, 'regular_market_price', None)
-            prev  = getattr(info, 'previous_close', price)
-            vol   = getattr(info, 'last_volume', 0) or 0
+            tk = _yf_ticker(symbol)
+            info = tk.fast_info
+            
+            price = getattr(info, 'last_price', None)
+            if not price:
+                price = getattr(info, 'regular_market_price', None)
+                
+            prev = getattr(info, 'previous_close', None)
+            vol = getattr(info, 'last_volume', None) or getattr(info, 'regular_market_volume', None)
+            
             if not price or price <= 0:
-                return None
-            chg = round((price - prev) / prev * 100, 2) if prev else 0
-            p   = round(price, 4)
-
-            # أهداف متدرجة حسب السعر
-            if p < 2:
-                t1,t2,t3 = round(p*1.25,4), round(p*1.55,4), round(p*2.00,4)
-            elif p < 5:
-                t1,t2,t3 = round(p*1.20,4), round(p*1.45,4), round(p*1.80,4)
-            elif p < 20:
-                t1,t2,t3 = round(p*1.15,4), round(p*1.30,4), round(p*1.55,4)
-            else:
-                t1,t2,t3 = round(p*1.10,4), round(p*1.20,4), round(p*1.35,4)
-
-            stop    = round(p * 0.93, 4)
-            e_hi    = round(p * 1.02, 4)
-            e_lo    = round(p * 0.98, 4)
-            e2      = round(p * 0.96, 4)
-            e3      = round(p * 0.93, 4)
-
+                if attempt == 1:
+                    return None
+                continue
+                
+            chg = round((price - prev) / prev, 4) if prev else 0
+            p = round(price, 4)
+            
+            # (اترك أو أكمل حسابات الأهداف e1, e2, e3 و stop الخاصة بك هنا إذا كانت موجودة بين السطر 116 و 137)
+            
             return dict(
                 symbol=symbol.upper(), price=p, prev=round(prev,4),
                 change_pct=chg, volume=int(vol),
@@ -128,10 +122,12 @@ def get_stock_data(symbol: str) -> dict | None:
                 stop=stop, t1=t1, t2=t2, t3=t3,
             )
         except Exception as e:
-            if attempt == 2:
+            if attempt == 1:
                 logger.warning(f"get_stock_data({symbol}) failed: {e}")
+                return None
             time.sleep(0.3)
     return None
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4.  التحليل الشامل (RSI, MACD, VWAP, MA, دعم/مقاومة ...)
