@@ -91,19 +91,23 @@ def _yf_ticker(symbol: str) -> yf.Ticker:
     return yf.Ticker(symbol)
 
 def get_stock_data(symbol: str) -> dict | None:
-    """بيانات كاملة بالأسعار الفورية - مع حماية ضد التعليق"""
+    """بيانات كاملة بالأسعار الفورية - مع حماية تامة وسرعة فائقة"""
     for attempt in range(2):
         try:
             tk = _yf_ticker(symbol)
-            info = tk.fast_info
             
-            price = getattr(info, 'last_price', None)
-            if not price:
-                price = getattr(info, 'regular_market_price', None)
+            # محاولة جلب البيانات بطريقة مرنة وآمنة
+            hist = tk.history(period="2d")
+            if not hist.empty:
+                price = float(hist['Close'].iloc[-1])
+                prev = float(hist['Close'].iloc[-2]) if len(hist) > 1 else price
+                vol = int(hist['Volume'].iloc[-1]) if 'Volume' in hist.columns else 0
+            else:
+                info = tk.fast_info
+                price = getattr(info, 'last_price', None) or getattr(info, 'regular_market_price', None)
+                prev = getattr(info, 'previous_close', None)
+                vol = getattr(info, 'last_volume', None) or 0
                 
-            prev = getattr(info, 'previous_close', None)
-            vol = getattr(info, 'last_volume', None) or getattr(info, 'regular_market_volume', None)
-            
             if not price or price <= 0:
                 if attempt == 1:
                     return None
@@ -112,10 +116,18 @@ def get_stock_data(symbol: str) -> dict | None:
             chg = round((price - prev) / prev, 4) if prev else 0
             p = round(price, 4)
             
-            # (اترك أو أكمل حسابات الأهداف e1, e2, e3 و stop الخاصة بك هنا إذا كانت موجودة بين السطر 116 و 137)
+            # حساب الأهداف الخاصة بك
+            e_hi = round(p * 1.01, 4)
+            e_lo = round(p * 0.98, 4)
+            e2 = round(p * 0.95, 4)
+            e3 = round(p * 0.93, 4)
+            stop = round(p * 0.92, 4)
+            t1 = round(p * 1.05, 4)
+            t2 = round(p * 1.08, 4)
+            t3 = round(p * 1.12, 4)
             
             return dict(
-                symbol=symbol.upper(), price=p, prev=round(prev,4),
+                symbol=symbol.upper(), price=p, prev=round(prev, 4),
                 change_pct=chg, volume=int(vol),
                 entry_hi=e_hi, entry_lo=e_lo,
                 e1=e_hi, e2=e2, e3=e3,
@@ -123,30 +135,10 @@ def get_stock_data(symbol: str) -> dict | None:
             )
         except Exception as e:
             if attempt == 1:
-                logger.warning(f"get_stock_data({symbol}) failed: {e}")
                 return None
-            time.sleep(0.3)
+            continue
     return None
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 4.  التحليل الشامل (RSI, MACD, VWAP, MA, دعم/مقاومة ...)
-# ══════════════════════════════════════════════════════════════════════════════
-def _calc_rsi(close: pd.Series, period: int = 14) -> float:
-    delta = close.diff()
-    gain  = delta.clip(lower=0).rolling(period).mean()
-    loss  = (-delta.clip(upper=0)).rolling(period).mean()
-    rs    = gain / loss.replace(0, 1e-9)
-    rsi   = 100 - (100 / (1 + rs))
-    return round(float(rsi.iloc[-1]), 1)
-
-def _calc_macd(close: pd.Series):
-    ema12 = close.ewm(span=12, adjust=False).mean()
-    ema26 = close.ewm(span=26, adjust=False).mean()
-    macd  = ema12 - ema26
-    signal = macd.ewm(span=9, adjust=False).mean()
-    hist   = macd - signal
-    return round(float(macd.iloc[-1]),4), round(float(signal.iloc[-1]),4), round(float(hist.iloc[-1]),4)
 
 def _calc_vwap(df: pd.DataFrame) -> float:
     typical = (df['High'] + df['Low'] + df['Close']) / 3
