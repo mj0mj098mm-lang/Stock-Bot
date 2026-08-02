@@ -1,0 +1,274 @@
+import logging
+import datetime
+import json
+import urllib.request
+from zoneinfo import ZoneInfo
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram.ext import ContextTypes
+
+logger = logging.getLogger(__name__)
+
+# ─── 1. الإعدادات وقوائم المشتركين ──────────────────────────────────────────
+ADMIN_IDS = [5134111738]
+SUBSCRIBED_USERS = set(ADMIN_IDS)
+
+DISCLAIMER_TEXT = (
+    "\n\n⚠️ **إخلاء مسؤولية:** التوصيات والتحليلات مبنية على دراسة وخوارزميات "
+    "فنية وليست دعوة للبيع أو الشراء، المسؤولية المالية تقع على عاتقك وحدك."
+)
+
+SUBSCRIBE_PROMPT_TEXT = (
+    "🔒 **عذراً، هذه الميزة مخصصة للمشتركين فقط!**\n\n"
+    "حسابك غير مفعل حالياً. للاشتراك والاستفادة من التحليلات والرادارات اللحظية، "
+    "يرجى التواصل مع الدعم الفني للبرنامج عبر الرابط التالي:\n"
+    "💬 https://t.me/e85ej"
+)
+
+# ─── 2. جلب الأسعار وحالة السوق (توقيت السعودية KSA) ──────────────────────────
+
+def get_market_status_ksa() -> str:
+    """تحديد حالة السوق الأمريكي بتوقيت السعودية"""
+    now_ksa = datetime.datetime.now(ZoneInfo('Asia/Riyadh'))
+    if now_ksa.weekday() in [5, 6]:
+        return "🔴 السوق مغلق (عطلة نهاية الأسبوع)"
+        
+    current_time = now_ksa.time()
+    if datetime.time(11, 0) <= current_time < datetime.time(16, 30):
+        return "🟡 ما قبل الافتتاح (Pre-Market)"
+    elif datetime.time(16, 30) <= current_time or current_time < datetime.time(0, 0):
+        if current_time >= datetime.time(16, 30):
+            return "🟢 السوق مفتوح حالياً (Regular Market)"
+        else:
+            return "🔴 السوق مغلق تماماً"
+    elif datetime.time(0, 0) <= current_time < datetime.time(4, 0):
+        return "🔵 بعد الإغلاق (After-Hours)"
+    else:
+        return "🔴 السوق مغلق حالياً"
+
+def get_stock_data(symbol: str):
+    """جلب السعر الفعلي مجاناً بدون مكتبات خارجية لتجنب أخطاء Render"""
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read().decode())
+            
+        price = data['chart']['result'][0]['meta']['regularMarketPrice']
+        if not price:
+            return None
+            
+        return {
+            "symbol": symbol.upper(),
+            "price": round(price, 2),
+            "target": round(price * 1.05, 2),
+            "stop": round(price * 0.95, 2)
+        }
+    except Exception as e:
+        logger.error(f"Error fetching {symbol}: {e}")
+        return None
+
+def check_subscription(user_id: int) -> str:
+    if user_id in SUBSCRIBED_USERS:
+        return "🟢 حالة الاشتراك: مُفعّل ✅"
+    else:
+        return "🔴 حالة الاشتراك: غير مُفعّل ❌"
+
+# ─── 3. لوحة الأزرار المطابقة للشاشة ─────────────────────────────────────────
+
+def get_main_keyboard(user_id: int):
+    keyboard = [
+        [
+            InlineKeyboardButton("🔥 الأسهم المطبل لها", callback_data="btn_trending"),
+            InlineKeyboardButton("🎯 كاشف الفرص", callback_data="btn_opportunities"),
+        ],
+        [
+            InlineKeyboardButton("⚡ أسهم مضاربية رخيصة", callback_data="btn_penny"),
+            InlineKeyboardButton("🐋 رادار الحيتان", callback_data="btn_whales"),
+        ],
+        [
+            InlineKeyboardButton("🔔 مربع التنبيهات", callback_data="btn_alerts"),
+        ],
+        [
+            InlineKeyboardButton("💬 الدعم الفني والتفعيل", url="https://t.me/e85ej"),
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_analysis_extra_keyboard():
+    keyboard = [
+        [
+            InlineKeyboardButton("⏱️ مضاربي (ساعة/يومي)", callback_data="frame_short"),
+            InlineKeyboardButton("📅 استثماري (أسبوعي)", callback_data="frame_long"),
+        ],
+        [
+            InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="btn_main_menu"),
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# ─── 4. المعالجات والأوامر (Handlers) ─────────────────────────────────────────
+
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    market_status = get_market_status_ksa()
+    sub_status = check_subscription(user.id)
+
+    if user.id in ADMIN_IDS:
+        await context.bot.set_my_commands([
+            BotCommand("start", "▶️ بدء البوت"),
+            BotCommand("help", "📖 الدليل والاستخدام"),
+            BotCommand("add_user", "✅ (أدمن) تفعيل اشتراك ID"),
+            BotCommand("remove_user", "❌ (أدمن) إلغاء اشتراك ID"),
+        ], scope={"type": "chat", "chat_id": user.id})
+    else:
+        await context.bot.set_my_commands([
+            BotCommand("start", "▶️ بدء البوت"),
+            BotCommand("help", "📖 دليل الاستخدام"),
+        ], scope={"type": "chat", "chat_id": user.id})
+
+    welcome_text = (
+        f"📡 أهلاً بك يا {user.first_name} في بوت Stock Beacon 🚀\n\n"
+        f"💡 مميزات البوت والاشتراك:\n"
+        f"▪️ رادار كشف صفقات الحيتان والسيولة المؤسسية الضخمة 🐋\n"
+        f"▪️ كاشف الفرص والاختراقات الفورية 🎯\n"
+        f"▪️ مقياس التطبيل والزخم الاجتماعي للأسهم 🔥\n"
+        f"▪️ شارتات لحظية فورية وتحديث مباشر للسعر 📈\n"
+        f"▪️ تحليل صور الشارت الفنية بشكل لحظي ⚡\n\n"
+        f"💳 خطط الاشتراك:\n"
+        f"• الاشتراك الشهري: 299 ريال / شهرياً 🗓️\n"
+        f"• الاشتراك السنوي (الماسي): 399 ريال / سنوياً 🔥 (العرض الأقوى)\n\n"
+        f"📌 حالة السوق الآن: {market_status}\n"
+        f"🆔 معرفك (ID): {user.id}\n"
+        f"{sub_status}\n\n"
+        f"⚠️ إخلاء مسؤولية: التوصيات والتحليلات مبنية على دراسة وخوارزميات فنية وليست دعوة للبيع أو الشراء، المسؤولية المالية تقع على عاتقك وحدك."
+    )
+
+    await update.message.reply_text(welcome_text, reply_markup=get_main_keyboard(user.id))
+
+async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = (
+        "📖 **دليل استخدام بوت Stock Beacon** 🚀\n\n"
+        "💡 **1. تحليل السهم برمز حقيقي:**\n"
+        "• أرسل رمز أي سهم (مثال: `NVDA` أو `TSLA`).\n\n"
+        "📸 **2. تحليل صور الشارتات:**\n"
+        "• أرسل صورة الشارت مباشرة لطلب تحليلها.\n\n"
+        "🎯 **3. الرادارات والخوارزميات:**\n"
+        "• استخدم أزرار القائمة لعرض الفرص والأسهم النشطة."
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user = query.from_user
+
+    back_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="btn_main_menu")]])
+
+    if data == "btn_main_menu":
+        market_status = get_market_status_ksa()
+        sub_status = check_subscription(user.id)
+        welcome_text = (
+            f"📡 أهلاً بك يا {user.first_name} في بوت Stock Beacon 🚀\n\n"
+            f"📌 حالة السوق الآن: {market_status}\n"
+            f"🆔 معرفك (ID): {user.id}\n"
+            f"{sub_status}"
+        )
+        await query.edit_message_text(text=welcome_text, reply_markup=get_main_keyboard(user.id))
+        return
+
+    if user.id not in SUBSCRIBED_USERS:
+        await query.edit_message_text(text=SUBSCRIBE_PROMPT_TEXT, reply_markup=back_btn, parse_mode="Markdown")
+        return
+
+    if data == "btn_opportunities":
+        await query.edit_message_text("⏳ جاري جلب الأسعار اللحظية لأهم الفرص...")
+        sample_symbols = ["NVDA", "TSLA", "AAPL", "AMD"]
+        text = "🎯 **أبرز الفرص الاختراقية الحالية:**\n\n"
+        for sym in sample_symbols:
+            d = get_stock_data(sym)
+            if d:
+                text += f"🟢 **{d['symbol']}** | السعر: `${d['price']}` | الهدف: `${d['target']}` | الوقف: `${d['stop']}`\n"
+        text += DISCLAIMER_TEXT
+        await query.edit_message_text(text=text, reply_markup=back_btn, parse_mode="Markdown")
+
+    elif data == "btn_trending":
+        text = "🔥 **الأسهم الأعلى زخماً والمطبل لها اليوم:**\n\n• NVDA\n• TSLA\n• PLTR" + DISCLAIMER_TEXT
+        await query.edit_message_text(text=text, reply_markup=back_btn, parse_mode="Markdown")
+
+    elif data == "btn_whales":
+        text = "🐋 **رادار السيولة والحيتان:**\n\nنشط ومتتبع للصفقات الضخمة أثناء تداول السوق."
+        await query.edit_message_text(text=text, reply_markup=back_btn, parse_mode="Markdown")
+
+    elif data == "btn_penny":
+        text = "⚡ **أسهم مضاربية رخيصة:**\n\n• LCID\n• SOFI\n• SNDL" + DISCLAIMER_TEXT
+        await query.edit_message_text(text=text, reply_markup=back_btn, parse_mode="Markdown")
+
+    elif data == "btn_alerts":
+        text = "🔔 **مربع التنبيهات:**\n\nلا توجد تنبيهات حادة متراكمة حالياً."
+        await query.edit_message_text(text=text, reply_markup=back_btn, parse_mode="Markdown")
+
+async def add_user_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id in ADMIN_IDS and context.args:
+        try:
+            target_id = int(context.args[0])
+            SUBSCRIBED_USERS.add(target_id)
+            await update.message.reply_text(f"✅ تم تفعيل ID: `{target_id}`", parse_mode="Markdown")
+        except ValueError:
+            pass
+
+async def remove_user_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id in ADMIN_IDS and context.args:
+        try:
+            target_id = int(context.args[0])
+            SUBSCRIBED_USERS.discard(target_id)
+            await update.message.reply_text(f"❌ تم إلغاء ID: `{target_id}`", parse_mode="Markdown")
+        except ValueError:
+            pass
+
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    user_id = update.effective_user.id
+
+    if user_id not in SUBSCRIBED_USERS:
+        await update.message.reply_text(SUBSCRIBE_PROMPT_TEXT, parse_mode="Markdown")
+        return
+
+    symbol = text.upper()
+    await update.message.reply_text(f"⏳ جاري طلب سعر **{symbol}**...")
+
+    data = get_stock_data(symbol)
+    if not data:
+        await update.message.reply_text(f"❌ لم يتم العثور على سهم باسم `{symbol}`.", parse_mode="Markdown")
+        return
+
+    price = data["price"]
+    chart_url = f"https://quickchart.io/chart?width=800&height=500&bkg=1e222d&c={{type:'line',data={{labels:['دعم 2','دعم 1','السعر الحالي','مقاومة 1','مقاومة 2'],datasets:[{{label:'{symbol}',data:[{round(price*0.92, 2)},{round(price*0.96, 2)},{price},{round(price*1.04, 2)},{round(price*1.08, 2)}],borderColor:'%2326a69a',backgroundColor:'rgba(38,166,154,0.1)',fill:true}}]}}}}"
+
+    caption = (
+        f"📈 **التحليل الفني لسهم: {symbol}**\n\n"
+        f"💰 **السعر اللحظي:** `${data['price']}`\n"
+        f"🎯 **الهدف:** `${data['target']}`\n"
+        f"🛑 **الوقف:** `${data['stop']}`\n\n"
+        f"📌 **حالة السوق:** {get_market_status_ksa()}"
+        f"{DISCLAIMER_TEXT}"
+    )
+    
+    await update.message.reply_photo(photo=chart_url, caption=caption, reply_markup=get_analysis_extra_keyboard(), parse_mode="Markdown")
+
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in SUBSCRIBED_USERS:
+        await update.message.reply_text(SUBSCRIBE_PROMPT_TEXT, parse_mode="Markdown")
+        return
+
+    await update.message.reply_text("⏳ جاري قراءة الشارت المرفق...")
+    analysis_text = (
+        "📊 **تم تحليل صورة الشارت المرفقة بنجاح:**\n\n"
+        "🟢 **النمط الفني:** اختراق إيجابي.\n"
+        "🎯 **الهدف المتوقع:** +5.0%\n"
+        "🛑 **وقف الخسارة:** -4.0%"
+        f"{DISCLAIMER_TEXT}"
+    )
+    await update.message.reply_text(analysis_text, reply_markup=get_analysis_extra_keyboard(), parse_mode="Markdown")

@@ -8,5 +8,6 @@ dependencies = [
     "mplfinance>=0.12.10b0",
     "python-telegram-bot>=22.8",
     "requests>=2.34.2",
+    "telegram>=0.0.1",
     "yfinance>=1.5.2",
 ]
