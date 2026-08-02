@@ -17,8 +17,8 @@ mode = "parallel"
 author = "agent"
 
 [[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python3 StockBeaconBOT.py"
+task = "workflow.run"
+args = "artifacts/mockup-sandbox: Component Preview Server"
 
 [workflows.workflow.metadata]
 outputType = "console"

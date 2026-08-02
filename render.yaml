@@ -1,0 +1,11 @@
+services:
+  - type: worker
+    name: stockbeacon-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python StockBeaconBOT.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: PORT
+        value: "9000"
