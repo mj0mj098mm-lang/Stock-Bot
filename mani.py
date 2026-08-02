@@ -95,7 +95,7 @@ def get_stock_data(symbol: str) -> dict | None:
     for attempt in range(2):
         try:
             tk = _yf_ticker(symbol)
-            
+
             hist = tk.history(period="5d")
             if not hist.empty and 'Close' in hist.columns:
                 price = float(hist['Close'].iloc[-1])
@@ -106,38 +106,38 @@ def get_stock_data(symbol: str) -> dict | None:
                 price = getattr(info, 'last_price', None) or getattr(info, 'regular_market_price', None)
                 prev = getattr(info, 'previous_close', None)
                 vol = int(getattr(info, 'last_volume', 0) or 0)
-                
+
             if not price or price <= 0:
                 if attempt == 1:
                     return None
                 continue
-                
-            chg = round((price - prev) / prev, 4) if prev else 0
-            p = round(price, 4)
-            
-            e_hi = round(p * 1.01, 4)
-            e_lo = round(p * 0.98, 4)
-            e2 = round(p * 0.95, 4)
-            e3 = round(p * 0.93, 4)
-            stop = round(p * 0.92, 4)
-            t1 = round(p * 1.05, 4)
-            t2 = round(p * 1.08, 4)
-            t3 = round(p * 1.12, 4)
-            
+
+            chg = round((price - prev) / prev * 100, 2) if prev else 0
+            p = round(price, 2)
+
+            e_hi = round(p * 1.01, 2)
+            e_lo = round(p * 0.98, 2)
+            e2 = round(p * 0.95, 2)
+            e3 = round(p * 0.93, 2)
+            stop = round(p * 0.92, 2)
+            t1 = round(p * 1.05, 2)
+            t2 = round(p * 1.08, 2)
+            t3 = round(p * 1.12, 2)
+
             return dict(
-                symbol=symbol.upper(), 
-                price=p, 
-                prev=round(prev, 4),
-                change_pct=chg, 
+                symbol=symbol.upper(),
+                price=p,
+                prev=round(prev, 2),
+                change_pct=chg,
                 volume=vol,
-                entry_hi=e_hi, 
+                entry_hi=e_hi,
                 entry_lo=e_lo,
-                e1=e_hi, 
-                e2=e2, 
+                e1=e_hi,
+                e2=e2,
                 e3=e3,
-                stop=stop, 
-                t1=t1, 
-                t2=t2, 
+                stop=stop,
+                t1=t1,
+                t2=t2,
                 t3=t3,
             )
         except Exception:
@@ -145,6 +145,45 @@ def get_stock_data(symbol: str) -> dict | None:
                 return None
             continue
     return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4.  المؤشرات الفنية (RSI / MACD / VWAP)
+# ══════════════════════════════════════════════════════════════════════════════
+def _calc_rsi(close: pd.Series, period: int = 14) -> float:
+    """RSI بطريقة Wilder's Smoothing القياسية"""
+    delta = close.diff()
+    gain  = delta.clip(lower=0)
+    loss  = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    rs  = avg_gain / avg_loss.replace(0, 1e-10)
+    rsi = 100 - (100 / (1 + rs))
+    val = rsi.iloc[-1]
+    return round(float(val), 2) if pd.notna(val) else 50.0
+
+def _calc_macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
+    """MACD القياسي (12, 26, 9) — يرجع (macd, signal, histogram)"""
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    macd_line   = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    hist_line   = macd_line - signal_line
+    return (
+        round(float(macd_line.iloc[-1]), 4),
+        round(float(signal_line.iloc[-1]), 4),
+        round(float(hist_line.iloc[-1]), 4),
+    )
+
+def _calc_vwap(hist: pd.DataFrame) -> float:
+    """VWAP تراكمي لآخر فترة مُعطاة (typical price × volume)"""
+    typical = (hist['High'] + hist['Low'] + hist['Close']) / 3
+    vol     = hist['Volume']
+    total_vol = vol.sum()
+    if total_vol == 0:
+        return round(float(hist['Close'].iloc[-1]), 2)
+    vwap = (typical * vol).sum() / total_vol
+    return round(float(vwap), 2)
 
 
 def deep_analysis(symbol: str) -> dict | None:
@@ -157,15 +196,15 @@ def deep_analysis(symbol: str) -> dict | None:
         if hist.empty or len(hist) < 30:
             return None
         close = hist['Close']
-        p     = round(float(close.iloc[-1]), 4)
-        prev  = round(float(close.iloc[-2]), 4) if len(close) > 1 else p
+        p     = round(float(close.iloc[-1]), 2)
+        prev  = round(float(close.iloc[-2]), 2) if len(close) > 1 else p
         vol   = int(hist['Volume'].iloc[-1])
         avg_vol = int(hist['Volume'].rolling(20).mean().iloc[-1])
 
         # المتوسطات
-        ma20  = round(float(close.rolling(20).mean().iloc[-1]), 4)
-        ma50  = round(float(close.rolling(50).mean().iloc[-1]), 4) if len(close) >= 50 else None
-        ma200 = round(float(close.rolling(200).mean().iloc[-1]), 4) if len(close) >= 200 else None
+        ma20  = round(float(close.rolling(20).mean().iloc[-1]), 2)
+        ma50  = round(float(close.rolling(50).mean().iloc[-1]), 2) if len(close) >= 50 else None
+        ma200 = round(float(close.rolling(200).mean().iloc[-1]), 2) if len(close) >= 200 else None
 
         # RSI, MACD, VWAP
         rsi          = _calc_rsi(close)
@@ -173,8 +212,8 @@ def deep_analysis(symbol: str) -> dict | None:
         vwap         = _calc_vwap(hist.tail(30))
 
         # دعم ومقاومة (أدنى/أعلى 20 يوم باستثناء آخر شمعة)
-        support    = round(float(hist['Low'].rolling(20).min().iloc[-2]), 4)
-        resistance = round(float(hist['High'].rolling(20).max().iloc[-2]), 4)
+        support    = round(float(hist['Low'].rolling(20).min().iloc[-2]), 2)
+        resistance = round(float(hist['High'].rolling(20).max().iloc[-2]), 2)
 
         # الاتجاه
         weekly = tk.history(period="6mo", interval="1wk", auto_adjust=True)
@@ -234,13 +273,13 @@ def deep_analysis(symbol: str) -> dict | None:
             action   = "wait"
 
         # نقاط الدخول
-        e1   = round(p * 1.005, 4)       # دخول فوري
-        e2   = round(support * 1.01, 4)  # عند الدعم
-        e3   = round(support * 0.98, 4)  # دعم أعمق
-        stop = round(support * 0.93, 4)
-        t1   = round(resistance, 4)
-        t2   = round(resistance * 1.15, 4)
-        t3   = round(resistance * 1.35, 4)
+        e1   = round(p * 1.005, 2)       # دخول فوري
+        e2   = round(support * 1.01, 2)  # عند الدعم
+        e3   = round(support * 0.98, 2)  # دعم أعمق
+        stop = round(support * 0.93, 2)
+        t1   = round(resistance, 2)
+        t2   = round(resistance * 1.15, 2)
+        t3   = round(resistance * 1.35, 2)
 
         risk_pct   = round((e1 - stop) / e1 * 100, 1)
         reward_pct = round((t1 - e1) / e1 * 100, 1)
@@ -275,7 +314,7 @@ def whale_score(symbol: str) -> dict | None:
         if hist.empty or len(hist) < 10:
             return None
         info = tk.fast_info
-        p    = round(getattr(info, 'last_price', 0) or float(hist['Close'].iloc[-1]), 4)
+        p    = round(getattr(info, 'last_price', 0) or float(hist['Close'].iloc[-1]), 2)
         vol  = int(hist['Volume'].iloc[-1])
         avg  = int(hist['Volume'].rolling(10).mean().iloc[-2])  # متوسط 10 أيام (استثناء اليوم)
         if avg == 0:
@@ -307,7 +346,7 @@ def whale_score(symbol: str) -> dict | None:
         return None
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6.  فاحص Swing (المعايير الأربعة)
+# 6.  فاحص سوينق (المعايير الأربعة)
 # ══════════════════════════════════════════════════════════════════════════════
 def swing_screen(symbol: str) -> dict | None:
     """
@@ -350,21 +389,21 @@ def swing_screen(symbol: str) -> dict | None:
         if any(c50[i] < m50[i] for i in range(len(c50))):
             return None
 
-        p    = round(price, 4)
+        p    = round(price, 2)
         chg  = round((price - info.get('previousClose', price)) / info.get('previousClose', price) * 100, 2)
         rsi  = _calc_rsi(close)
-        stop = round(float(ma50.iloc[-1]) * 0.97, 4)
-        t1   = round(p * 1.20, 4)
-        t2   = round(p * 1.45, 4)
-        t3   = round(p * 1.80, 4)
-        e_hi = round(p * 1.02, 4)
-        e_lo = round(p * 0.98, 4)
+        stop = round(float(ma50.iloc[-1]) * 0.97, 2)
+        t1   = round(p * 1.20, 2)
+        t2   = round(p * 1.45, 2)
+        t3   = round(p * 1.80, 2)
+        e_hi = round(p * 1.02, 2)
+        e_lo = round(p * 0.98, 2)
         flt_m = round(flt / 1e6, 1)
 
         return dict(
             symbol=symbol.upper(), price=p, change_pct=chg,
             volume=vol, float_m=flt_m, rsi=rsi,
-            ma50=round(float(ma50.iloc[-1]), 4),
+            ma50=round(float(ma50.iloc[-1]), 2),
             entry_hi=e_hi, entry_lo=e_lo,
             stop=stop, t1=t1, t2=t2, t3=t3,
         )
@@ -432,6 +471,13 @@ def _fmt_vol(v: int) -> str:
     if v >= 1_000:     return f"{v/1e3:.0f}K"
     return str(v)
 
+def _fmt_price(v) -> str:
+    """تنسيق السعر بخانتين عشريتين دائماً (مثال: 1.42 و 12.50 وليس 1.4072)"""
+    try:
+        return f"{float(v):.2f}"
+    except (TypeError, ValueError):
+        return str(v)
+
 def rec_card(d: dict) -> str:
     """بطاقة توصية موحدة — مطابقة للنموذج المطلوب"""
     arrow = "📈" if d['change_pct'] >= 0 else "📉"
@@ -443,10 +489,10 @@ def rec_card(d: dict) -> str:
         f"{arrow} *التغيير:* `{sign}{d['change_pct']}%`"
         f"  |  📦 `{_fmt_vol(d.get('volume',0))}`\n\n"
         f"🟢 *منطقة الدخول*\n"
-        f"`{d['entry_hi']}` ← `{d['entry_lo']}`\n\n"
-        f"🛑 *الوقف*\n`{d['stop']}`\n\n"
+        f"`{_fmt_price(d['entry_hi'])}` ← `{_fmt_price(d['entry_lo'])}`\n\n"
+        f"🛑 *الوقف*\n`{_fmt_price(d['stop'])}`\n\n"
         f"🎯 *الأهداف*\n"
-        f"`{d['t1']}`\n`{d['t2']}`\n`{d['t3']}`"
+        f"`{_fmt_price(d['t1'])}`\n`{_fmt_price(d['t2'])}`\n`{_fmt_price(d['t3'])}`"
         + DISCLAIMER
     )
 
@@ -467,27 +513,27 @@ def deep_card(d: dict) -> str:
 
     if action in ("buy","buy_grad"):
         body = (
-            f"\n*سعر الدخول الأول:*  `${d['e1']}`\n"
-            f"*سعر الدخول الثاني:* `${d['e2']}`\n"
-            f"*سعر الدخول الثالث:* `${d['e3']}`\n\n"
-            f"*وقف الخسارة:* `${d['stop']}`\n"
+            f"\n*سعر الدخول الأول:*  `${_fmt_price(d['e1'])}`\n"
+            f"*سعر الدخول الثاني:* `${_fmt_price(d['e2'])}`\n"
+            f"*سعر الدخول الثالث:* `${_fmt_price(d['e3'])}`\n\n"
+            f"*وقف الخسارة:* `${_fmt_price(d['stop'])}`\n"
             f"*نسبة المخاطرة:* `{d['risk_pct']}%`\n\n"
-            f"*الهدف الأول:*  `${d['t1']}`\n"
-            f"*الهدف الثاني:* `${d['t2']}`\n"
-            f"*الهدف الثالث:* `${d['t3']}`\n\n"
+            f"*الهدف الأول:*  `${_fmt_price(d['t1'])}`\n"
+            f"*الهدف الثاني:* `${_fmt_price(d['t2'])}`\n"
+            f"*الهدف الثالث:* `${_fmt_price(d['t3'])}`\n\n"
             f"*نسبة العائد / المخاطرة:* `{d['rr']}:1`\n"
         )
     elif action == "sell":
         body = (
             f"\n⚠️ السهم في اتجاه هابط.\n"
-            f"*وقف الخسارة إذا كنت ممسكاً:* `${d['stop']}`\n"
-            f"*أقرب دعم للمراقبة:* `${d['support']}`\n"
+            f"*وقف الخسارة إذا كنت ممسكاً:* `${_fmt_price(d['stop'])}`\n"
+            f"*أقرب دعم للمراقبة:* `${_fmt_price(d['support'])}`\n"
         )
     else:
         body = (
             f"\n*السهم بحاجة لمزيد من التأكيد.*\n"
-            f"*منطقة المراقبة:* `${d['support']}` — `${d['resistance']}`\n"
-            f"*الدخول عند كسر:* `${d['resistance']}`\n"
+            f"*منطقة المراقبة:* `${_fmt_price(d['support'])}` — `${_fmt_price(d['resistance'])}`\n"
+            f"*الدخول عند كسر:* `${_fmt_price(d['resistance'])}`\n"
         )
 
     if d.get('earnings'):
@@ -497,18 +543,18 @@ def deep_card(d: dict) -> str:
 
 def swing_card(d: dict) -> str:
     return (
-        f"*{d['symbol']}* 〽️ Swing\n\n"
-        f"💲 *السعر:* `${d['price']}`"
+        f"*{d['symbol']}* 〽️ سوينق\n\n"
+        f"💲 *السعر:* `${_fmt_price(d['price'])}`"
         f"  📈 `{'+' if d['change_pct']>=0 else ''}{d['change_pct']}%`\n"
         f"📦 *الحجم:* `{_fmt_vol(d['volume'])}`"
         f"  |  🔄 *Float:* `{d['float_m']}M`\n"
         f"📊 *RSI:* `{d['rsi']}`"
-        f"  |  *MA50:* `${d['ma50']}`\n\n"
+        f"  |  *MA50:* `${_fmt_price(d['ma50'])}`\n\n"
         f"🟢 *منطقة الدخول*\n"
-        f"`{d['entry_hi']}` ← `{d['entry_lo']}`\n\n"
-        f"🛑 *الوقف*\n`{d['stop']}`\n\n"
+        f"`{_fmt_price(d['entry_hi'])}` ← `{_fmt_price(d['entry_lo'])}`\n\n"
+        f"🛑 *الوقف*\n`{_fmt_price(d['stop'])}`\n\n"
         f"🎯 *الأهداف*\n"
-        f"`{d['t1']}`\n`{d['t2']}`\n`{d['t3']}`"
+        f"`{_fmt_price(d['t1'])}`\n`{_fmt_price(d['t2'])}`\n`{_fmt_price(d['t3'])}`"
         + DISCLAIMER
     )
 
@@ -516,7 +562,7 @@ def whale_card(d: dict) -> str:
     bar = "🟢" * (d['whale_pct']//20) + "⬜" * (5 - d['whale_pct']//20)
     return (
         f"*{d['symbol']}* 🐋\n\n"
-        f"💲 *السعر:* `${d['price']}`"
+        f"💲 *السعر:* `${_fmt_price(d['price'])}`"
         f"  📈 `{'+' if d['change_pct']>=0 else ''}{d['change_pct']}%`\n"
         f"📦 *الحجم اليوم:* `{_fmt_vol(d['volume'])}`\n"
         f"📊 *متوسط الحجم:* `{_fmt_vol(d['avg_vol'])}`\n"
@@ -540,7 +586,7 @@ def kb_main() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🐋 رادار الحيتان",        callback_data="whale"),
             InlineKeyboardButton("⚡ أسهم مضاربية رخيصة", callback_data="penny"),
         ],
-        [InlineKeyboardButton("〽️ تحليل Swing",          callback_data="swing")],
+        [InlineKeyboardButton("〽️ تحليل سوينق",          callback_data="swing")],
         [InlineKeyboardButton("🔔 مربع التنبيهات",        callback_data="alerts_box")],
         [InlineKeyboardButton("💬 الدعم الفني والتفعيل", url="https://t.me/e85ej")],
     ])
@@ -666,7 +712,7 @@ async def stats_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"  🔥 المطبل: `{st.get('trend',0)}`\n"
         f"  🐋 الحيتان: `{st.get('whale',0)}`\n"
         f"  ⚡ مضاربية: `{st.get('penny',0)}`\n"
-        f"  〽️ Swing: `{st.get('swing',0)}`\n"
+        f"  〽️ سوينق: `{st.get('swing',0)}`\n"
         f"  🔍 تحليلات: `{st.get('analyses',0)}`\n\n"
         "*المشتركون:*\n" + "\n".join(f"  • `{u}`" for u in subs),
         parse_mode="Markdown"
@@ -766,9 +812,12 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     msg = await update.message.reply_text(f"⏳ جاري التحليل الشامل لـ *{symbol}* ...", parse_mode="Markdown")
-    d = get_stock_data(symbol)
+
+    # التحليل الشامل هو الأساس دائماً (RSI/MACD/دعم ومقاومة)
+    d = deep_analysis(symbol)
     if not d:
-        d = deep_analysis(symbol)
+        # احتياطي: بيانات سعرية أساسية فقط لو فشل التحليل الشامل
+        d = get_stock_data(symbol)
         if not d:
             await msg.edit_text(f"❌ لم يتم العثور على `{symbol}`. تأكد من صحة الرمز.", parse_mode="Markdown")
             return
@@ -782,6 +831,7 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         d['e1'] = d['entry_hi']
         d['e2'] = d['entry_lo']
         d['e3'] = d['stop']
+
     ctx.bot_data.setdefault("stats",{})["analyses"] = ctx.bot_data["stats"].get("analyses",0) + 1
     await msg.edit_text(deep_card(d), reply_markup=kb_analysis(symbol), parse_mode="Markdown")
 
@@ -823,8 +873,8 @@ async def alerts_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines = ["🔔 *تنبيهاتك النشطة:*\n"]
         for s, inf in ua.items():
             lines.append(
-                f"• *{s}* | دخول `{inf['e_lo']}←{inf['e_hi']}`"
-                f" | وقف `{inf['stop']}` | هدف `{inf['t1']}`"
+                f"• *{s}* | دخول `{_fmt_price(inf['e_lo'])}←{_fmt_price(inf['e_hi'])}`"
+                f" | وقف `{_fmt_price(inf['stop'])}` | هدف `{_fmt_price(inf['t1'])}`"
             )
         text = "\n".join(lines)
     await update.message.reply_text(text, reply_markup=kb_alerts(uid, alerts), parse_mode="Markdown")
@@ -868,8 +918,8 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not d:
             await q.edit_message_text(f"❌ تعذّر جلب `{sym}`", reply_markup=kb_back(), parse_mode="Markdown")
             return
-        d['entry_hi'] = d.get('entry_hi', round(d['price']*1.02,4))
-        d['entry_lo'] = d.get('entry_lo', round(d['price']*0.98,4))
+        d['entry_hi'] = d.get('entry_hi', round(d['price']*1.02,2))
+        d['entry_lo'] = d.get('entry_lo', round(d['price']*0.98,2))
         await q.edit_message_text(rec_card(d), reply_markup=kb_analysis(sym), parse_mode="Markdown")
         return
 
@@ -888,7 +938,7 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ua     = alerts.get(uid, {})
         text   = ("🔔 *مربع التنبيهات*\n\nلا توجد تنبيهات." if not ua else
                   "🔔 *تنبيهاتك النشطة:*\n\n" +
-                  "\n".join(f"• *{s}* | وقف `{i['stop']}` | هدف `{i['t1']}`"
+                  "\n".join(f"• *{s}* | وقف `{_fmt_price(i['stop'])}` | هدف `{_fmt_price(i['t1'])}`"
                              for s,i in ua.items()))
         await q.edit_message_text(text, reply_markup=kb_alerts(uid, alerts), parse_mode="Markdown")
         return
@@ -908,7 +958,7 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ua     = alerts.get(uid, {})
         text   = ("🔔 *مربع التنبيهات*\n\nلا توجد تنبيهات." if not ua else
                   "🔔 *تنبيهاتك النشطة:*\n\n" +
-                  "\n".join(f"• *{s}* | وقف `{i['stop']}` | هدف `{i['t1']}`"
+                  "\n".join(f"• *{s}* | وقف `{_fmt_price(i['stop'])}` | هدف `{_fmt_price(i['t1'])}`"
                              for s,i in ua.items()))
         await q.edit_message_text(text, reply_markup=kb_alerts(uid, alerts), parse_mode="Markdown")
         return
@@ -945,10 +995,10 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(recs, reply_markup=kb_list_with_alerts(syms), parse_mode="Markdown")
         return
 
-    # ── Swing ─────────────────────────────────────────────────────────────────
+    # ── سوينق ─────────────────────────────────────────────────────────────────
     if data == "swing":
         ctx.bot_data["stats"]["swing"] = ctx.bot_data["stats"].get("swing",0) + 1
-        await q.edit_message_text("⏳ جاري فحص معايير Swing (Float + MA50 + Volume) ...")
+        await q.edit_message_text("⏳ جاري فحص معايير سوينق (Float + MA50 + Volume) ...")
         recs, syms = await _build_swing_recs()
         await q.edit_message_text(recs, reply_markup=kb_list_with_alerts(syms), parse_mode="Markdown")
         return
@@ -968,8 +1018,8 @@ async def _build_recs(category: str, title: str, want: int = 5) -> tuple[str, li
         # تأكد السعر $1-$50
         if not (1 <= d['price'] <= 50):
             continue
-        d['entry_hi'] = round(d['price'] * 1.02, 4)
-        d['entry_lo'] = round(d['price'] * 0.98, 4)
+        d['entry_hi'] = round(d['price'] * 1.02, 2)
+        d['entry_lo'] = round(d['price'] * 0.98, 2)
         results.append(rec_card(d))
         syms.append(sym)
 
@@ -981,8 +1031,8 @@ async def _build_recs(category: str, title: str, want: int = 5) -> tuple[str, li
             d = get_stock_data(sym)
             if not d or not (1 <= d['price'] <= 50):
                 continue
-            d['entry_hi'] = round(d['price'] * 1.02, 4)
-            d['entry_lo'] = round(d['price'] * 0.98, 4)
+            d['entry_hi'] = round(d['price'] * 1.02, 2)
+            d['entry_lo'] = round(d['price'] * 0.98, 2)
             results.append(rec_card(d))
             syms.append(sym)
 
@@ -1017,7 +1067,7 @@ async def _build_whale_recs(want: int = 5) -> tuple[str, list]:
     return f"🐋 *رادار الحيتان المؤسسية:*\n\n{body}{DISCLAIMER}", syms
 
 async def _build_swing_recs(want: int = 4) -> tuple[str, list]:
-    # قائمة أسهم مرشّحة للـ Swing (سعر ≤ $5)
+    # قائمة أسهم مرشّحة للـ سوينق (سعر ≤ $5)
     candidates = pick_symbols("swing", n=want + 10)
     # أضف من القائمة الاحتياطية
     candidates += random.sample(_FALLBACK_1_50, min(20, len(_FALLBACK_1_50)))
@@ -1035,18 +1085,18 @@ async def _build_swing_recs(want: int = 4) -> tuple[str, list]:
 
     if not results:
         body = (
-            "⚠️ لم يتم العثور على أسهم تستوفي معايير Swing الآن.\n\n"
+            "⚠️ لم يتم العثور على أسهم تستوفي معايير سوينق الآن.\n\n"
             "*المعايير المطلوبة:*\n"
             "• سعر ≤ $5\n"
             "• حجم > 100,000\n"
             "• Float بين 30M و 100M\n"
             "• فوق MA50 دون كسره منذ 3 أشهر"
         )
-        return f"〽️ *تحليل Swing:*\n\n{body}", []
+        return f"〽️ *تحليل سوينق:*\n\n{body}", []
 
     sep  = "\n\n━━━━━━━━━━━━━━━━━━━━\n\n"
     body = sep.join(results)
-    return f"〽️ *أسهم Swing المؤهلة:*\n\n{body}", syms
+    return f"〽️ *أسهم سوينق المؤهلة:*\n\n{body}", syms
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 15.  إضافة تنبيه (مساعد)
@@ -1065,17 +1115,17 @@ async def _do_add_alert(target, ctx: ContextTypes.DEFAULT_TYPE, uid: int, symbol
         return
     p = d['price']
     inf = dict(
-        e_hi=round(p*1.02,4), e_lo=round(p*0.98,4),
-        stop=round(p*0.93,4),
+        e_hi=round(p*1.02,2), e_lo=round(p*0.98,2),
+        stop=round(p*0.93,2),
         t1=d['t1'], t2=d['t2'], t3=d['t3'],
     )
     alerts[uid][symbol] = inf
     txt = (
         f"✅ *تم إضافة تنبيه على {symbol}*\n\n"
         f"*{symbol}*\n\n"
-        f"🟢 *منطقة الدخول*\n`{inf['e_hi']}` ← `{inf['e_lo']}`\n\n"
-        f"🛑 *الوقف*\n`{inf['stop']}`\n\n"
-        f"🎯 *الأهداف*\n`{inf['t1']}`\n`{inf['t2']}`\n`{inf['t3']}`\n\n"
+        f"🟢 *منطقة الدخول*\n`{_fmt_price(inf['e_hi'])}` ← `{_fmt_price(inf['e_lo'])}`\n\n"
+        f"🛑 *الوقف*\n`{_fmt_price(inf['stop'])}`\n\n"
+        f"🎯 *الأهداف*\n`{_fmt_price(inf['t1'])}`\n`{_fmt_price(inf['t2'])}`\n`{_fmt_price(inf['t3'])}`\n\n"
         "سأُرسل لك تنبيهاً فور تحقق الهدف أو لمس الوقف 🔔"
     )
     kb = InlineKeyboardMarkup([
@@ -1103,7 +1153,7 @@ async def check_alerts_job(ctx: ContextTypes.DEFAULT_TYPE):
                     await ctx.bot.send_message(
                         uid,
                         f"🎯 *{sym} حقق الهدف الأول!*\n"
-                        f"💰 السعر: `${p}` | الهدف: `${inf['t1']}`",
+                        f"💰 السعر: `${_fmt_price(p)}` | الهدف: `${_fmt_price(inf['t1'])}`",
                         parse_mode="Markdown"
                     )
                     inf['t1'] = inf['t2'] + 99999
@@ -1111,7 +1161,7 @@ async def check_alerts_job(ctx: ContextTypes.DEFAULT_TYPE):
                     await ctx.bot.send_message(
                         uid,
                         f"🛑 *{sym} لمس وقف الخسارة!*\n"
-                        f"💰 السعر: `${p}` | الوقف: `${inf['stop']}`",
+                        f"💰 السعر: `${_fmt_price(p)}` | الوقف: `${_fmt_price(inf['stop'])}`",
                         parse_mode="Markdown"
                     )
                     ua.pop(sym, None)
