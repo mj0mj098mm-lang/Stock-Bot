@@ -96,9 +96,8 @@ def get_stock_data(symbol: str) -> dict | None:
         try:
             tk = _yf_ticker(symbol)
             
-            # محاولة جلب البيانات بطريقة مرنة وآمنة
-            hist = tk.history(period="2d")
-            if not hist.empty:
+            hist = tk.history(period="5d")
+            if not hist.empty and 'Close' in hist.columns:
                 price = float(hist['Close'].iloc[-1])
                 prev = float(hist['Close'].iloc[-2]) if len(hist) > 1 else price
                 vol = int(hist['Volume'].iloc[-1]) if 'Volume' in hist.columns else 0
@@ -106,7 +105,7 @@ def get_stock_data(symbol: str) -> dict | None:
                 info = tk.fast_info
                 price = getattr(info, 'last_price', None) or getattr(info, 'regular_market_price', None)
                 prev = getattr(info, 'previous_close', None)
-                vol = getattr(info, 'last_volume', None) or 0
+                vol = int(getattr(info, 'last_volume', 0) or 0)
                 
             if not price or price <= 0:
                 if attempt == 1:
@@ -116,7 +115,6 @@ def get_stock_data(symbol: str) -> dict | None:
             chg = round((price - prev) / prev, 4) if prev else 0
             p = round(price, 4)
             
-            # حساب الأهداف الخاصة بك
             e_hi = round(p * 1.01, 4)
             e_lo = round(p * 0.98, 4)
             e2 = round(p * 0.95, 4)
@@ -127,23 +125,27 @@ def get_stock_data(symbol: str) -> dict | None:
             t3 = round(p * 1.12, 4)
             
             return dict(
-                symbol=symbol.upper(), price=p, prev=round(prev, 4),
-                change_pct=chg, volume=int(vol),
-                entry_hi=e_hi, entry_lo=e_lo,
-                e1=e_hi, e2=e2, e3=e3,
-                stop=stop, t1=t1, t2=t2, t3=t3,
+                symbol=symbol.upper(), 
+                price=p, 
+                prev=round(prev, 4),
+                change_pct=chg, 
+                volume=vol,
+                entry_hi=e_hi, 
+                entry_lo=e_lo,
+                e1=e_hi, 
+                e2=e2, 
+                e3=e3,
+                stop=stop, 
+                t1=t1, 
+                t2=t2, 
+                t3=t3,
             )
-        except Exception as e:
+        except Exception:
             if attempt == 1:
                 return None
             continue
     return None
 
-
-def _calc_vwap(df: pd.DataFrame) -> float:
-    typical = (df['High'] + df['Low'] + df['Close']) / 3
-    vwap = (typical * df['Volume']).cumsum() / df['Volume'].cumsum()
-    return round(float(vwap.iloc[-1]), 4)
 
 def deep_analysis(symbol: str) -> dict | None:
     """تحليل شامل باستخدام yfinance — يُستخدم عند إرسال رمز سهم"""
