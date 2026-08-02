@@ -2,12 +2,13 @@
 StockBeacon AI — mani.py
 كل المنطق والـ handlers. يُستورد من StockBeaconBOT.py
 """
-import logging, datetime, json, random, time, re
+import logging, datetime, json, random, time, re, os, asyncio
 import urllib.request, urllib.error
 from zoneinfo import ZoneInfo
 
 import yfinance as yf
 import pandas as pd
+import psycopg2
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
@@ -21,7 +22,6 @@ logger = logging.getLogger("mani")
 # 1.  الإعدادات
 # ══════════════════════════════════════════════════════════════════════════════
 ADMIN_IDS: set[int]  = {5134111738}
-SUBSCRIBED_USERS: set[int] = set(ADMIN_IDS)
 
 DISCLAIMER = (
     "\n\n⚠️ *إخلاء مسؤولية:* تحليلات خوارزمية فنية — "
@@ -33,6 +33,87 @@ LOCKED_MSG = (
     "اشترك الآن للوصول لجميع التحليلات والرادارات اللحظية.\n"
     "💬 للتفعيل: https://t.me/e85ej"
 )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1.5  قاعدة البيانات (Supabase Postgres) — تخزين المشتركين بشكل دائم
+# ══════════════════════════════════════════════════════════════════════════════
+_DB_URL = os.environ.get("DATABASE_URL")
+
+def _db_conn():
+    return psycopg2.connect(_DB_URL)
+
+def _init_db():
+    if not _DB_URL:
+        logger.warning("⚠️ DATABASE_URL غير موجود — المشتركون لن يُحفظوا بعد إعادة التشغيل!")
+        return
+    try:
+        conn = _db_conn()
+        cur  = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS subscribers (
+                user_id BIGINT PRIMARY KEY
+            )
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info("✅ قاعدة البيانات جاهزة")
+    except Exception as e:
+        logger.error(f"_init_db: {e}")
+
+def _load_subs() -> set[int]:
+    if not _DB_URL:
+        return set()
+    try:
+        conn = _db_conn()
+        cur  = conn.cursor()
+        cur.execute("SELECT user_id FROM subscribers")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return {r[0] for r in rows}
+    except Exception as e:
+        logger.error(f"_load_subs: {e}")
+        return set()
+
+def _save_sub(uid: int):
+    if not _DB_URL:
+        return
+    try:
+        conn = _db_conn()
+        cur  = conn.cursor()
+        cur.execute(
+            "INSERT INTO subscribers (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
+            (uid,)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"_save_sub: {e}")
+
+def _remove_sub(uid: int):
+    if not _DB_URL:
+        return
+    try:
+        conn = _db_conn()
+        cur  = conn.cursor()
+        cur.execute("DELETE FROM subscribers WHERE user_id = %s", (uid,))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"_remove_sub: {e}")
+
+_init_db()
+SUBSCRIBED_USERS: set[int] = set(ADMIN_IDS) | _load_subs()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1.6  مساعد تشغيل الاستدعاءات المتزامنة (yfinance) بخيط منفصل
+#      عشان ما يعلّق البوت لبقية المستخدمين وقت أي طلب تحليل
+# ══════════════════════════════════════════════════════════════════════════════
+async def _run_blocking(func, *args):
+    return await asyncio.to_thread(func, *args)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 2.  تقويم إجازات السوق الأمريكي 2025-2026
@@ -63,7 +144,7 @@ _HOLIDAYS: dict[datetime.date, str] = {
 }
 
 def market_status() -> tuple[str, bool]:
-    """(نص الحالة, هل السوق مفتوح فعلاً)"""
+    """(نص الحالة, هل السوق مفتوح فعلا)"""
     now  = datetime.datetime.now(ZoneInfo('Asia/Riyadh'))
     today = now.date()
     if today in _HOLIDAYS:
@@ -176,7 +257,7 @@ def _calc_macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
     )
 
 def _calc_vwap(hist: pd.DataFrame) -> float:
-    """VWAP تراكمي لآخر فترة مُعطاة (typical price × volume)"""
+    """VWAP تراكمي لآخر فترة معطاة (typical price × volume)"""
     typical = (hist['High'] + hist['Low'] + hist['Close']) / 3
     vol     = hist['Volume']
     total_vol = vol.sum()
@@ -571,6 +652,25 @@ def whale_card(d: dict) -> str:
     )
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 8.5  رسائل خطأ تسليكية عشوائية (لما رمز السهم ما يكون موجود)
+# ══════════════════════════════════════════════════════════════════════════════
+_NOT_FOUND_JOKES = [
+    "🤔 ما لقيت هالسهم! يمكن كتبته غلط، أو يمكنه اختفى مع تحديث الآيفون الجديد 😂",
+    "🕵️‍♂️ فتشت السوق كامل وما لقيت هالرمز... متأكد إنه مو اسم مطعم؟ 😅",
+    "👻 هذا السهم شبح! ما له وجود بالسوق الأمريكي.",
+    "🔍 دورت له بكل مكان حتى بمحفظة جدي... ما لقيته!",
+    "🚀 يمكن السهم طلع للفضاء ولا رجع لين الحين 🛸",
+]
+
+def _witty_not_found(symbol: str) -> str:
+    joke = random.choice(_NOT_FOUND_JOKES)
+    return (
+        f"{joke}\n\n"
+        f"الرمز اللي أرسلته: `{symbol}`\n"
+        "تأكد من الرمز وحاول مرة ثانية، مثال: `AAPL` أو `TSLA` 😉"
+    )
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 9.  لوحات المفاتيح
 # ══════════════════════════════════════════════════════════════════════════════
 def _back() -> list:
@@ -673,7 +773,7 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"📡 *أهلاً {name} في بوت Stock Beacon * 🚀\n\n"
         "💡 *مميزات البوت:*\n"
-        "▪️ رادار الحيتان والسيولة المؤسسية 🐋\n"
+        "▪ رادار الحيتان والسيولة المؤسسية 🐋\n"
         "▪️ كاشف الفرص والاختراقات الفورية 🎯\n"
         "▪️ تحليل السوينق بمعايير احترافية 〽️\n"
         "▪️ تنبيهات فورية عند تحقق الأهداف 🔔\n\n"
@@ -731,18 +831,9 @@ async def add_user_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-async def remove_user_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return
-    if not ctx.args:
-        await update.message.reply_text("الاستخدام: `/remove_user <ID>`", parse_mode="Markdown")
-        return
-    uid = int(ctx.args[0])
-    SUBSCRIBED_USERS.discard(uid)
-    await update.message.reply_text(f"❌ تم إلغاء اشتراك `{uid}`", parse_mode="Markdown")
-
 async def _activate_user(ctx, uid: int, msg_target):
     SUBSCRIBED_USERS.add(uid)
+    _save_sub(uid)
     await msg_target.reply_text(f"✅ تم تفعيل المشترك `{uid}`", parse_mode="Markdown")
     try:
         await ctx.bot.send_message(
@@ -753,6 +844,24 @@ async def _activate_user(ctx, uid: int, msg_target):
         )
     except Exception:
         pass
+
+# ── إزالة مشترك (نفس منطق الإضافة تماماً) ────────────────────────────────────
+async def remove_user_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    if ctx.args:
+        await _deactivate_user(ctx, int(ctx.args[0]), update.message)
+        return
+    ctx.user_data["removing_sub"] = True
+    await update.message.reply_text(
+        "✏️ *أرسل معرّف المشترك (ID) الذي تريد إلغاء تفعيله:*",
+        parse_mode="Markdown"
+    )
+
+async def _deactivate_user(ctx, uid: int, msg_target):
+    SUBSCRIBED_USERS.discard(uid)
+    _remove_sub(uid)
+    await msg_target.reply_text(f"❌ تم إلغاء اشتراك `{uid}`", parse_mode="Markdown")
 
 # ── Broadcast ────────────────────────────────────────────────────────────────
 async def broadcast_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -788,11 +897,20 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     txt  = update.message.text.strip()
     ctx.bot_data.setdefault("all_users", set()).add(uid)
 
-    # إدخال ID مشترك جديد (أدمن)
+    # إدخال ID مشترك جديد (أدمن) — إضافة
     if ctx.user_data.get("adding_sub") and uid in ADMIN_IDS:
         ctx.user_data.pop("adding_sub")
         if txt.isdigit():
             await _activate_user(ctx, int(txt), update.message)
+        else:
+            await update.message.reply_text("❌ أرسل رقم ID صحيح.")
+        return
+
+    # إدخال ID مشترك (أدمن) — إزالة
+    if ctx.user_data.get("removing_sub") and uid in ADMIN_IDS:
+        ctx.user_data.pop("removing_sub")
+        if txt.isdigit():
+            await _deactivate_user(ctx, int(txt), update.message)
         else:
             await update.message.reply_text("❌ أرسل رقم ID صحيح.")
         return
@@ -813,13 +931,13 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     msg = await update.message.reply_text(f"⏳ جاري التحليل الشامل لـ *{symbol}* ...", parse_mode="Markdown")
 
-    # التحليل الشامل هو الأساس دائماً (RSI/MACD/دعم ومقاومة)
-    d = deep_analysis(symbol)
+    # التحليل الشامل هو الأساس دائماً (RSI/MACD/دعم ومقاومة) — يُستدعى مهما كان طول الرمز
+    d = await _run_blocking(deep_analysis, symbol)
     if not d:
         # احتياطي: بيانات سعرية أساسية فقط لو فشل التحليل الشامل
-        d = get_stock_data(symbol)
+        d = await _run_blocking(get_stock_data, symbol)
         if not d:
-            await msg.edit_text(f"❌ لم يتم العثور على `{symbol}`. تأكد من صحة الرمز.", parse_mode="Markdown")
+            await msg.edit_text(_witty_not_found(symbol), parse_mode="Markdown")
             return
         d['decision'] = "انتظار ⏳"
         d['action']   = "wait"
@@ -914,9 +1032,9 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(LOCKED_MSG, reply_markup=kb_locked(), parse_mode="Markdown")
             return
         await q.edit_message_text(f"⏳ جاري تحديث *{sym}* ...", parse_mode="Markdown")
-        d = get_stock_data(sym)
+        d = await _run_blocking(get_stock_data, sym)
         if not d:
-            await q.edit_message_text(f"❌ تعذّر جلب `{sym}`", reply_markup=kb_back(), parse_mode="Markdown")
+            await q.edit_message_text(_witty_not_found(sym), reply_markup=kb_back(), parse_mode="Markdown")
             return
         d['entry_hi'] = d.get('entry_hi', round(d['price']*1.02,2))
         d['entry_lo'] = d.get('entry_lo', round(d['price']*0.98,2))
@@ -1012,7 +1130,7 @@ async def _build_recs(category: str, title: str, want: int = 5) -> tuple[str, li
     for sym in candidates:
         if len(results) >= want:
             break
-        d = get_stock_data(sym)
+        d = await _run_blocking(get_stock_data, sym)
         if not d:
             continue
         # تأكد السعر $1-$50
@@ -1028,7 +1146,7 @@ async def _build_recs(category: str, title: str, want: int = 5) -> tuple[str, li
         for sym in random.sample(_FALLBACK_1_50, min(want+4, len(_FALLBACK_1_50))):
             if len(results) >= want:
                 break
-            d = get_stock_data(sym)
+            d = await _run_blocking(get_stock_data, sym)
             if not d or not (1 <= d['price'] <= 50):
                 continue
             d['entry_hi'] = round(d['price'] * 1.02, 2)
@@ -1046,7 +1164,7 @@ async def _build_whale_recs(want: int = 5) -> tuple[str, list]:
     for sym in candidates:
         if len(results) >= want:
             break
-        d = whale_score(sym)
+        d = await _run_blocking(whale_score, sym)
         if not d or d['whale_pct'] < 30:
             continue
         results.append(whale_card(d))
@@ -1056,7 +1174,7 @@ async def _build_whale_recs(want: int = 5) -> tuple[str, list]:
         for sym in random.sample(_FALLBACK_1_50, min(want+6, len(_FALLBACK_1_50))):
             if len(results) >= want:
                 break
-            d = whale_score(sym)
+            d = await _run_blocking(whale_score, sym)
             if not d:
                 continue
             results.append(whale_card(d))
@@ -1077,7 +1195,7 @@ async def _build_swing_recs(want: int = 4) -> tuple[str, list]:
     for sym in candidates:
         if len(results) >= want:
             break
-        d = swing_screen(sym)
+        d = await _run_blocking(swing_screen, sym)
         if not d:
             continue
         results.append(swing_card(d))
@@ -1102,12 +1220,12 @@ async def _build_swing_recs(want: int = 4) -> tuple[str, list]:
 # 15.  إضافة تنبيه (مساعد)
 # ══════════════════════════════════════════════════════════════════════════════
 async def _do_add_alert(target, ctx: ContextTypes.DEFAULT_TYPE, uid: int, symbol: str, via_msg: bool):
-    d = get_stock_data(symbol)
+    d = await _run_blocking(get_stock_data, symbol)
     alerts = ctx.bot_data.setdefault("alerts", {})
     if uid not in alerts:
         alerts[uid] = {}
     if not d:
-        txt = f"❌ لم يتم العثور على `{symbol}`. تأكد من الرمز."
+        txt = _witty_not_found(symbol)
         if via_msg:
             await target.reply_text(txt, reply_markup=kb_back(), parse_mode="Markdown")
         else:
@@ -1144,7 +1262,7 @@ async def check_alerts_job(ctx: ContextTypes.DEFAULT_TYPE):
     alerts = ctx.bot_data.get("alerts", {})
     for uid, ua in list(alerts.items()):
         for sym, inf in list(ua.items()):
-            d = get_stock_data(sym)
+            d = await _run_blocking(get_stock_data, sym)
             if not d:
                 continue
             p = d['price']
