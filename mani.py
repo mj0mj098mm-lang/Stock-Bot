@@ -34,8 +34,17 @@ LOCKED_MSG = (
     "💬 للتفعيل: https://t.me/e85ej"
 )
 
+# أسماء الفئات المستخدمة بجدول التتبع (تُستخدم كمفتاح داخلي وبعرض الإحصائية)
+CATEGORY_LABELS = {
+    "deep":  "🔍 تحليل مباشر (بحث سهم)",
+    "opp":   "🎯 كاشف الفرص",
+    "trend": "🔥 الأسهم المطبل لها",
+    "penny": "⚡ مضاربية رخيصة",
+    "swing": "〽️ سوينق",
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
-# 1.5  قاعدة البيانات (Supabase Postgres) — تخزين المشتركين بشكل دائم
+# 1.5  قاعدة البيانات (Supabase Postgres) — مشتركين + تتبع أداء التوصيات
 # ══════════════════════════════════════════════════════════════════════════════
 _DB_URL = os.environ.get("DATABASE_URL")
 
@@ -44,7 +53,7 @@ def _db_conn():
 
 def _init_db():
     if not _DB_URL:
-        logger.warning("⚠️ DATABASE_URL غير موجود — المشتركون لن يُحفظوا بعد إعادة التشغيل!")
+        logger.warning("⚠️ DATABASE_URL غير موجود — البيانات لن تُحفظ بعد إعادة التشغيل!")
         return
     try:
         conn = _db_conn()
@@ -52,6 +61,19 @@ def _init_db():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS subscribers (
                 user_id BIGINT PRIMARY KEY
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS recommendations (
+                id SERIAL PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                category TEXT NOT NULL,
+                entry_price NUMERIC,
+                target_price NUMERIC,
+                stop_price NUMERIC,
+                status TEXT DEFAULT 'open',
+                created_at TIMESTAMP DEFAULT NOW(),
+                closed_at TIMESTAMP
             )
         """)
         conn.commit()
@@ -105,12 +127,97 @@ def _remove_sub(uid: int):
     except Exception as e:
         logger.error(f"_remove_sub: {e}")
 
+def _save_recommendation(symbol: str, category: str, entry: float, target: float, stop: float):
+    """يسجّل توصية جديدة لتتبع أدائها لاحقاً (شفافية + إحصائية حقيقية)"""
+    if not _DB_URL:
+        return
+    try:
+        conn = _db_conn()
+        cur  = conn.cursor()
+        cur.execute(
+            """INSERT INTO recommendations
+               (symbol, category, entry_price, target_price, stop_price)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (symbol, category, entry, target, stop)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"_save_recommendation: {e}")
+
+async def check_recommendations_job(ctx: ContextTypes.DEFAULT_TYPE):
+    """job دوري: يتابع التوصيات المفتوحة ويحدّث حالتها (نجاح/فشل) بصمت بدون إزعاج المستخدمين"""
+    if not _DB_URL:
+        return
+    try:
+        conn = _db_conn()
+        cur  = conn.cursor()
+        cur.execute(
+            "SELECT id, symbol, target_price, stop_price FROM recommendations WHERE status = 'open'"
+        )
+        open_recs = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"check_recommendations_job (fetch): {e}")
+        return
+
+    for rec_id, symbol, target, stop in open_recs:
+        d = await _run_blocking(get_stock_data, symbol)
+        if not d:
+            continue
+        price = d['price']
+        new_status = None
+        if price >= float(target):
+            new_status = 'hit_target'
+        elif price <= float(stop):
+            new_status = 'hit_stop'
+
+        if new_status:
+            try:
+                conn = _db_conn()
+                cur  = conn.cursor()
+                cur.execute(
+                    "UPDATE recommendations SET status=%s, closed_at=NOW() WHERE id=%s",
+                    (new_status, rec_id)
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+            except Exception as e:
+                logger.error(f"check_recommendations_job (update {rec_id}): {e}")
+
+def _get_performance_stats() -> dict:
+    """يرجع إحصائية نجاح/فشل مفصّلة لكل فئة على حدة"""
+    if not _DB_URL:
+        return {}
+    try:
+        conn = _db_conn()
+        cur  = conn.cursor()
+        cur.execute("""
+            SELECT category, status, COUNT(*)
+            FROM recommendations
+            GROUP BY category, status
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"_get_performance_stats: {e}")
+        return {}
+
+    stats = {}
+    for category, status, count in rows:
+        stats.setdefault(category, {"open": 0, "hit_target": 0, "hit_stop": 0})
+        stats[category][status] = count
+    return stats
+
 _init_db()
 SUBSCRIBED_USERS: set[int] = set(ADMIN_IDS) | _load_subs()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1.6  مساعد تشغيل الاستدعاءات المتزامنة (yfinance) بخيط منفصل
-#      عشان ما يعلّق البوت لبقية المستخدمين وقت أي طلب تحليل
 # ══════════════════════════════════════════════════════════════════════════════
 async def _run_blocking(func, *args):
     return await asyncio.to_thread(func, *args)
@@ -144,7 +251,7 @@ _HOLIDAYS: dict[datetime.date, str] = {
 }
 
 def market_status() -> tuple[str, bool]:
-    """(نص الحالة, هل السوق مفتوح فعلا)"""
+    """(نص الحالة, هل السوق مفتوح فعلاً)"""
     now  = datetime.datetime.now(ZoneInfo('Asia/Riyadh'))
     today = now.date()
     if today in _HOLIDAYS:
@@ -172,7 +279,8 @@ def _yf_ticker(symbol: str) -> yf.Ticker:
     return yf.Ticker(symbol)
 
 def get_stock_data(symbol: str) -> dict | None:
-    """بيانات كاملة بالأسعار الفورية - مع حماية تامة وسرعة فائقة"""
+    """بيانات كاملة بالأسعار الفورية - مع حماية تامة وسرعة فائقة
+    منطقة الدخول مضيقة (±0.5%) بدل النسب الواسعة القديمة"""
     for attempt in range(2):
         try:
             tk = _yf_ticker(symbol)
@@ -196,14 +304,15 @@ def get_stock_data(symbol: str) -> dict | None:
             chg = round((price - prev) / prev * 100, 2) if prev else 0
             p = round(price, 2)
 
-            e_hi = round(p * 1.01, 2)
-            e_lo = round(p * 0.98, 2)
-            e2 = round(p * 0.95, 2)
-            e3 = round(p * 0.93, 2)
-            stop = round(p * 0.92, 2)
-            t1 = round(p * 1.05, 2)
-            t2 = round(p * 1.08, 2)
-            t3 = round(p * 1.12, 2)
+            # منطقة دخول ضيقة ومنطقية (±0.5%) بدل ±2% القديمة
+            e_hi = round(p * 1.005, 2)
+            e_lo = round(p * 0.995, 2)
+            e2 = round(p * 0.98, 2)
+            e3 = round(p * 0.96, 2)
+            stop = round(p * 0.95, 2)   # وقف 5% بدل 8%
+            t1 = round(p * 1.03, 2)
+            t2 = round(p * 1.06, 2)
+            t3 = round(p * 1.10, 2)
 
             return dict(
                 symbol=symbol.upper(),
@@ -229,7 +338,7 @@ def get_stock_data(symbol: str) -> dict | None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4.  المؤشرات الفنية (RSI / MACD / VWAP)
+# 4.  المؤشرات الفنية (RSI / MACD / VWAP / ATR / Bollinger / Stochastic)
 # ══════════════════════════════════════════════════════════════════════════════
 def _calc_rsi(close: pd.Series, period: int = 14) -> float:
     """RSI بطريقة Wilder's Smoothing القياسية"""
@@ -257,7 +366,7 @@ def _calc_macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
     )
 
 def _calc_vwap(hist: pd.DataFrame) -> float:
-    """VWAP تراكمي لآخر فترة معطاة (typical price × volume)"""
+    """VWAP تراكمي لآخر فترة مُعطاة (typical price × volume)"""
     typical = (hist['High'] + hist['Low'] + hist['Close']) / 3
     vol     = hist['Volume']
     total_vol = vol.sum()
@@ -266,9 +375,50 @@ def _calc_vwap(hist: pd.DataFrame) -> float:
     vwap = (typical * vol).sum() / total_vol
     return round(float(vwap), 2)
 
+def _calc_atr(hist: pd.DataFrame, period: int = 14) -> float:
+    """Average True Range — يقيس تذبذب السهم الفعلي، يُستخدم لحساب
+    مناطق دخول ووقف منطقية بدل نسب ثابتة عشوائية"""
+    high, low, close = hist['High'], hist['Low'], hist['Close']
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(period).mean().iloc[-1]
+    return round(float(atr), 4) if pd.notna(atr) else round(float(close.iloc[-1]) * 0.02, 4)
+
+def _calc_bollinger(close: pd.Series, period: int = 20, num_std: float = 2.0):
+    """Bollinger Bands — يكشف تشبع الشراء/البيع الفعلي حسب انحراف السعر"""
+    mid = close.rolling(period).mean()
+    std = close.rolling(period).std()
+    upper = mid + num_std * std
+    lower = mid - num_std * std
+    return (
+        round(float(upper.iloc[-1]), 2),
+        round(float(mid.iloc[-1]), 2),
+        round(float(lower.iloc[-1]), 2),
+    )
+
+def _calc_stochastic(hist: pd.DataFrame, period: int = 14, smooth_k: int = 3, smooth_d: int = 3):
+    """Stochastic Oscillator — مؤشر زخم إضافي يقوّي إشارة RSI"""
+    low_min  = hist['Low'].rolling(period).min()
+    high_max = hist['High'].rolling(period).max()
+    denom = (high_max - low_min).replace(0, 1e-10)
+    percent_k = 100 * (hist['Close'] - low_min) / denom
+    k_smooth  = percent_k.rolling(smooth_k).mean()
+    d_smooth  = k_smooth.rolling(smooth_d).mean()
+    k_val = k_smooth.iloc[-1]
+    d_val = d_smooth.iloc[-1]
+    return (
+        round(float(k_val), 2) if pd.notna(k_val) else 50.0,
+        round(float(d_val), 2) if pd.notna(d_val) else 50.0,
+    )
+
 
 def deep_analysis(symbol: str) -> dict | None:
-    """تحليل شامل باستخدام yfinance — يُستخدم عند إرسال رمز سهم"""
+    """تحليل شامل باستخدام yfinance — يُستخدم عند إرسال رمز سهم
+    مناطق الدخول والوقف الآن مبنية على ATR الفعلي بدل نسب ثابتة"""
     try:
         tk   = _yf_ticker(symbol)
         info = tk.info
@@ -287,10 +437,13 @@ def deep_analysis(symbol: str) -> dict | None:
         ma50  = round(float(close.rolling(50).mean().iloc[-1]), 2) if len(close) >= 50 else None
         ma200 = round(float(close.rolling(200).mean().iloc[-1]), 2) if len(close) >= 200 else None
 
-        # RSI, MACD, VWAP
+        # RSI, MACD, VWAP, ATR, Bollinger, Stochastic
         rsi          = _calc_rsi(close)
         macd, sig, hist_val = _calc_macd(close)
         vwap         = _calc_vwap(hist.tail(30))
+        atr          = _calc_atr(hist)
+        bb_upper, bb_mid, bb_lower = _calc_bollinger(close)
+        stoch_k, stoch_d = _calc_stochastic(hist)
 
         # دعم ومقاومة (أدنى/أعلى 20 يوم باستثناء آخر شمعة)
         support    = round(float(hist['Low'].rolling(20).min().iloc[-2]), 2)
@@ -338,32 +491,38 @@ def deep_analysis(symbol: str) -> dict | None:
         if "صاعد" in d_trend: score += 1
         if "صاعد" in w_trend: score += 1
         if "صاعد" in m_trend: score += 1
+        # Bollinger Bands — تشبع فعلي حسب الانحراف المعياري
+        if p <= bb_lower: score += 2      # قرب الحد السفلي = فرصة ارتداد
+        elif p >= bb_upper: score -= 2    # قرب الحد العلوي = تشبع شراء
+        # Stochastic — تأكيد زخم إضافي
+        if stoch_k < 20 and stoch_k > stoch_d: score += 2   # خروج من تشبع بيع
+        elif stoch_k > 80 and stoch_k < stoch_d: score -= 2 # خروج من تشبع شراء
 
         # القرار
-        if score >= 7:
+        if score >= 8:
             decision = "شراء الآن 🟢"
             action   = "buy"
-        elif score >= 4:
+        elif score >= 5:
             decision = "شراء تدريجي 🔵"
             action   = "buy_grad"
-        elif score <= -3:
+        elif score <= -4:
             decision = "بيع / تجنب 🔴"
             action   = "sell"
         else:
             decision = "انتظار ⏳"
             action   = "wait"
 
-        # نقاط الدخول
-        e1   = round(p * 1.005, 2)       # دخول فوري
-        e2   = round(support * 1.01, 2)  # عند الدعم
-        e3   = round(support * 0.98, 2)  # دعم أعمق
-        stop = round(support * 0.93, 2)
+        # نقاط الدخول والوقف — مبنية على ATR الفعلي (تذبذب حقيقي للسهم)
+        e1   = round(p * 1.002, 2)          # دخول فوري (قريب جداً من السعر الحالي)
+        e2   = round(p - 0.5 * atr, 2)      # عند دعم قريب
+        e3   = round(p - 1.0 * atr, 2)      # دعم أعمق
+        stop = round(p - 2.0 * atr, 2)
         t1   = round(resistance, 2)
-        t2   = round(resistance * 1.15, 2)
-        t3   = round(resistance * 1.35, 2)
+        t2   = round(resistance + 1.0 * atr, 2)
+        t3   = round(resistance + 2.0 * atr, 2)
 
-        risk_pct   = round((e1 - stop) / e1 * 100, 1)
-        reward_pct = round((t1 - e1) / e1 * 100, 1)
+        risk_pct   = round((e1 - stop) / e1 * 100, 1) if e1 > 0 else 0
+        reward_pct = round((t1 - e1) / e1 * 100, 1) if e1 > 0 else 0
         rr         = round(reward_pct / risk_pct, 1) if risk_pct > 0 else 0
 
         return dict(
@@ -372,6 +531,8 @@ def deep_analysis(symbol: str) -> dict | None:
             volume=vol, avg_vol=avg_vol,
             ma20=ma20, ma50=ma50, ma200=ma200,
             rsi=rsi, macd=macd, signal=sig, hist=hist_val, vwap=vwap,
+            atr=atr, bb_upper=bb_upper, bb_mid=bb_mid, bb_lower=bb_lower,
+            stoch_k=stoch_k, stoch_d=stoch_d,
             support=support, resistance=resistance,
             w_trend=w_trend, m_trend=m_trend, d_trend=d_trend,
             earnings=earnings_date,
@@ -436,6 +597,7 @@ def swing_screen(symbol: str) -> dict | None:
       • حجم > 100K
       • Float 30M-100M
       • فوق MA50 (لم يُكسر منذ 60 يوم)
+    منطقة الدخول مضيّقة (±0.5%) بدل ±2% القديمة
     """
     try:
         tk   = _yf_ticker(symbol)
@@ -477,8 +639,8 @@ def swing_screen(symbol: str) -> dict | None:
         t1   = round(p * 1.20, 2)
         t2   = round(p * 1.45, 2)
         t3   = round(p * 1.80, 2)
-        e_hi = round(p * 1.02, 2)
-        e_lo = round(p * 0.98, 2)
+        e_hi = round(p * 1.005, 2)
+        e_lo = round(p * 0.995, 2)
         flt_m = round(flt / 1e6, 1)
 
         return dict(
@@ -745,6 +907,7 @@ async def _set_cmds(bot, uid: int):
         cmds = [
             BotCommand("start",       "▶️ القائمة"),
             BotCommand("stats",       "📊 الإحصائيات"),
+            BotCommand("performance", "📈 أداء التوصيات"),
             BotCommand("broadcast",   "📣 بث رسالة"),
             BotCommand("add_user",    "✅ تفعيل مشترك"),
             BotCommand("remove_user", "❌ إلغاء مشترك"),
@@ -773,7 +936,7 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"📡 *أهلاً {name} في بوت Stock Beacon * 🚀\n\n"
         "💡 *مميزات البوت:*\n"
-        "▪ رادار الحيتان والسيولة المؤسسية 🐋\n"
+        "▪️ رادار الحيتان والسيولة المؤسسية 🐋\n"
         "▪️ كاشف الفرص والاختراقات الفورية 🎯\n"
         "▪️ تحليل السوينق بمعايير احترافية 〽️\n"
         "▪️ تنبيهات فورية عند تحقق الأهداف 🔔\n\n"
@@ -817,6 +980,46 @@ async def stats_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "*المشتركون:*\n" + "\n".join(f"  • `{u}`" for u in subs),
         parse_mode="Markdown"
     )
+
+# ── أداء التوصيات (أدمن فقط) — إحصائية مفصّلة لكل فئة على حدة ──────────────────
+async def performance_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    if not _DB_URL:
+        await update.message.reply_text("⚠️ قاعدة البيانات غير متصلة، لا تتوفر إحصائية.")
+        return
+
+    stats = await _run_blocking(_get_performance_stats)
+    if not stats:
+        await update.message.reply_text("📈 *أداء التوصيات*\n\nلا توجد توصيات مسجّلة بعد.", parse_mode="Markdown")
+        return
+
+    lines = ["📈 *أداء التوصيات — تفصيل كامل لكل ميزة*\n"]
+    total_hit = total_stop = total_open = 0
+
+    for cat_key, label in CATEGORY_LABELS.items():
+        c = stats.get(cat_key, {"open": 0, "hit_target": 0, "hit_stop": 0})
+        hit, stop, opened = c.get("hit_target",0), c.get("hit_stop",0), c.get("open",0)
+        closed = hit + stop
+        win_rate = round(hit / closed * 100, 1) if closed > 0 else 0
+        total_hit += hit; total_stop += stop; total_open += opened
+
+        lines.append(
+            f"\n{label}\n"
+            f"  ✅ نجحت: `{hit}`  |  ❌ فشلت: `{stop}`  |  ⏳ مفتوحة: `{opened}`\n"
+            f"  📊 نسبة النجاح: `{win_rate}%`" + (f" (من {closed} مغلقة)" if closed else " (لا توجد بيانات كافية بعد)")
+        )
+
+    total_closed = total_hit + total_stop
+    overall_rate = round(total_hit / total_closed * 100, 1) if total_closed > 0 else 0
+    lines.append(
+        f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏆 *الإجمالي العام:*\n"
+        f"✅ نجحت: `{total_hit}`  |  ❌ فشلت: `{total_stop}`  |  ⏳ مفتوحة: `{total_open}`\n"
+        f"📊 *نسبة النجاح الكلية:* `{overall_rate}%`"
+    )
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 # ── إضافة مشترك ──────────────────────────────────────────────────────────────
 async def add_user_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -931,10 +1134,9 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     msg = await update.message.reply_text(f"⏳ جاري التحليل الشامل لـ *{symbol}* ...", parse_mode="Markdown")
 
-    # التحليل الشامل هو الأساس دائماً (RSI/MACD/دعم ومقاومة) — يُستدعى مهما كان طول الرمز
+    # التحليل الشامل هو الأساس دائماً — يُستدعى مهما كان طول الرمز
     d = await _run_blocking(deep_analysis, symbol)
     if not d:
-        # احتياطي: بيانات سعرية أساسية فقط لو فشل التحليل الشامل
         d = await _run_blocking(get_stock_data, symbol)
         if not d:
             await msg.edit_text(_witty_not_found(symbol), parse_mode="Markdown")
@@ -951,6 +1153,11 @@ async def text_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         d['e3'] = d['stop']
 
     ctx.bot_data.setdefault("stats",{})["analyses"] = ctx.bot_data["stats"].get("analyses",0) + 1
+
+    # تسجيل التوصية لتتبع الأداء لاحقاً — فقط لو القرار شراء
+    if d.get('action') in ("buy", "buy_grad"):
+        await _run_blocking(_save_recommendation, symbol, "deep", d['e1'], d['t1'], d['stop'])
+
     await msg.edit_text(deep_card(d), reply_markup=kb_analysis(symbol), parse_mode="Markdown")
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1036,8 +1243,8 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not d:
             await q.edit_message_text(_witty_not_found(sym), reply_markup=kb_back(), parse_mode="Markdown")
             return
-        d['entry_hi'] = d.get('entry_hi', round(d['price']*1.02,2))
-        d['entry_lo'] = d.get('entry_lo', round(d['price']*0.98,2))
+        d['entry_hi'] = d.get('entry_hi', round(d['price']*1.005,2))
+        d['entry_lo'] = d.get('entry_lo', round(d['price']*0.995,2))
         await q.edit_message_text(rec_card(d), reply_markup=kb_analysis(sym), parse_mode="Markdown")
         return
 
@@ -1136,10 +1343,12 @@ async def _build_recs(category: str, title: str, want: int = 5) -> tuple[str, li
         # تأكد السعر $1-$50
         if not (1 <= d['price'] <= 50):
             continue
-        d['entry_hi'] = round(d['price'] * 1.02, 2)
-        d['entry_lo'] = round(d['price'] * 0.98, 2)
+        d['entry_hi'] = round(d['price'] * 1.005, 2)
+        d['entry_lo'] = round(d['price'] * 0.995, 2)
         results.append(rec_card(d))
         syms.append(sym)
+        # تسجيل التوصية لتتبع الأداء (لكل فئة على حدة: opp / trend / penny)
+        await _run_blocking(_save_recommendation, sym, category, d['entry_hi'], d['t1'], d['stop'])
 
     # طريق الاحتياط
     if not results:
@@ -1149,10 +1358,11 @@ async def _build_recs(category: str, title: str, want: int = 5) -> tuple[str, li
             d = await _run_blocking(get_stock_data, sym)
             if not d or not (1 <= d['price'] <= 50):
                 continue
-            d['entry_hi'] = round(d['price'] * 1.02, 2)
-            d['entry_lo'] = round(d['price'] * 0.98, 2)
+            d['entry_hi'] = round(d['price'] * 1.005, 2)
+            d['entry_lo'] = round(d['price'] * 0.995, 2)
             results.append(rec_card(d))
             syms.append(sym)
+            await _run_blocking(_save_recommendation, sym, category, d['entry_hi'], d['t1'], d['stop'])
 
     sep  = "\n\n━━━━━━━━━━━━━━━━━━━━\n\n"
     body = sep.join(results) if results else "⚠️ السوق مغلق أو لا توجد بيانات الآن."
@@ -1200,6 +1410,8 @@ async def _build_swing_recs(want: int = 4) -> tuple[str, list]:
             continue
         results.append(swing_card(d))
         syms.append(d['symbol'])
+        # تسجيل التوصية لتتبع أداء السوينق لحاله
+        await _run_blocking(_save_recommendation, d['symbol'], "swing", d['entry_hi'], d['t1'], d['stop'])
 
     if not results:
         body = (
@@ -1233,8 +1445,8 @@ async def _do_add_alert(target, ctx: ContextTypes.DEFAULT_TYPE, uid: int, symbol
         return
     p = d['price']
     inf = dict(
-        e_hi=round(p*1.02,2), e_lo=round(p*0.98,2),
-        stop=round(p*0.93,2),
+        e_hi=round(p*1.005,2), e_lo=round(p*0.995,2),
+        stop=round(p*0.95,2),
         t1=d['t1'], t2=d['t2'], t3=d['t3'],
     )
     alerts[uid][symbol] = inf
@@ -1302,6 +1514,8 @@ def register_handlers(app):
     app.add_handler(CommandHandler("help",        help_handler))
     app.add_handler(CommandHandler("alerts",      alerts_cmd))
     app.add_handler(CommandHandler("stats",       stats_handler,
+                                   filters=filters.User(user_id=list(ADMIN_IDS))))
+    app.add_handler(CommandHandler("performance", performance_handler,
                                    filters=filters.User(user_id=list(ADMIN_IDS))))
     app.add_handler(CommandHandler("add_user",    add_user_cmd,
                                    filters=filters.User(user_id=list(ADMIN_IDS))))
