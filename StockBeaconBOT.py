@@ -67,6 +67,7 @@ def main():
     app = ApplicationBuilder().token(token).build()
     mani.register_handlers(app)
     app.job_queue.run_repeating(mani.check_alerts_job, interval=300, first=60)
+    app.job_queue.run_repeating(mani.check_recommendations_job, interval=1800, first=90)
 
     logger.info("🚀 StockBeacon AI — جاهز للعمل 24/7")
     app.run_polling(drop_pending_updates=True, allowed_updates=["message","callback_query"])
