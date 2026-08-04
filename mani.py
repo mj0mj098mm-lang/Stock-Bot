@@ -878,7 +878,7 @@ def kb_back() -> InlineKeyboardMarkup:
 
 def kb_locked() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💬 اشترك الآن", url="https://t.me/e85ej")],
+        [InlineKeyboardButton("💬 اشترك الآن", url="https://wa.me/966551860285")],
         [_back()[0]],
     ])
 
