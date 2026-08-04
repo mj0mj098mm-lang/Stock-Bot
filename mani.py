@@ -31,7 +31,7 @@ DISCLAIMER = (
 LOCKED_MSG = (
     "🔒 *هذه الميزة للمشتركين فقط*\n\n"
     "اشترك الآن للوصول لجميع التحليلات والرادارات اللحظية.\n"
-    "💬 للتفعيل: https://t.me/e85ej"
+    "💬 الدعم الفني والتفعيل", url="https://wa.me/966551860285")"
 )
 
 # أسماء الفئات المستخدمة بجدول التتبع (تُستخدم كمفتاح داخلي وبعرض الإحصائية)
@@ -850,7 +850,7 @@ def kb_main() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("〽️ تحليل سوينق",          callback_data="swing")],
         [InlineKeyboardButton("🔔 مربع التنبيهات",        callback_data="alerts_box")],
-        [InlineKeyboardButton("💬 الدعم الفني والتفعيل", url="https://t.me/e85ej")],
+        [InlineKeyboardButton("💬 الدعم الفني والتفعيل", url="https://wa.me/966551860285")],
     ])
 
 def kb_analysis(symbol: str) -> InlineKeyboardMarkup:
